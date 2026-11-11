@@ -1073,7 +1073,20 @@ export async function createViewer(container,url,options={}) {
   listen(canvas,'pointermove',event=>{if(!drag||drag.id!==event.pointerId)return;camera=sanitizeCamera({yaw:camera.yaw+(event.clientX-drag.x)*0.009,pitch:camera.pitch+(event.clientY-drag.y)*0.009},camera);drag.x=event.clientX;drag.y=event.clientY;requestDraw();notifyCamera();});
   const endDrag=()=>{drag=null;};for(const event of ['pointerup','pointercancel','lostpointercapture'])listen(canvas,event,endDrag);
   listen(canvas,'wheel',event=>{event.preventDefault();camera=sanitizeCamera({zoom:camera.zoom*Math.exp(event.deltaY*0.001)},camera);requestDraw();notifyCamera();},{passive:false});
-  listen(canvas,'keydown',event=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','0'].includes(event.key))return;event.preventDefault();if(event.key==='0'){api.reset();return;}const next={...camera};if(event.key==='ArrowLeft')next.yaw-=0.15;if(event.key==='ArrowRight')next.yaw+=0.15;if(event.key==='ArrowUp')next.pitch-=0.15;if(event.key==='ArrowDown')next.pitch+=0.15;if(['+','='].includes(event.key))next.zoom-=0.2;if(event.key==='-')next.zoom+=0.2;camera=sanitizeCamera(next);requestDraw();notifyCamera();});
+  listen(canvas,'keydown',event=>{
+    if(event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.isComposing)return;
+    if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','0'].includes(event.key))return;
+    event.preventDefault();
+    if(event.key==='0'){api.reset();return;}
+    const next={...camera};
+    if(event.key==='ArrowLeft')next.yaw-=0.15;
+    if(event.key==='ArrowRight')next.yaw+=0.15;
+    if(event.key==='ArrowUp')next.pitch-=0.15;
+    if(event.key==='ArrowDown')next.pitch+=0.15;
+    if(['+','='].includes(event.key))next.zoom-=0.2;
+    if(event.key==='-')next.zoom+=0.2;
+    camera=sanitizeCamera(next);requestDraw();notifyCamera();
+  });
   }
   try {
     geometry=await loadGeometry(url,{signal:abort.signal});

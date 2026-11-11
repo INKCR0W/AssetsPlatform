@@ -114,6 +114,31 @@ export function createWorkbench(config) {
       hasNext: page < totalPages
     };
   }
+  function adjacentAsset(items, currentId, direction) {
+    const currentIndex = items.findIndex(item => item.id === currentId);
+    if (currentIndex < 0) return null;
+    return items[currentIndex + direction] ?? null;
+  }
+  function detailShortcut(event, {editing = false, commentFocused = false, spaceTarget = false, viewerFocused = false} = {}) {
+    if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return null;
+    if (event.key === 'Escape') return {type: commentFocused ? 'blurComment' : 'close'};
+    if (editing || commentFocused) return null;
+    // 预览画布自己处理方向键和 0（旋转与重置视角）
+    if (viewerFocused && ['ArrowLeft', 'ArrowRight', '0'].includes(event.key)) return null;
+    switch (event.key.toLowerCase()) {
+      case '1': return {type: 'review', status: 'keep'};
+      case '2': return {type: 'review', status: 'check'};
+      case '3': return {type: 'review', status: 'skip'};
+      case '0': return {type: 'review', status: 'pending'};
+      case 'arrowleft':
+      case 'k': return {type: 'adjacent', direction: -1};
+      case 'arrowright':
+      case 'j': return {type: 'adjacent', direction: 1};
+      case 'c': return {type: 'comment'};
+      case ' ': return spaceTarget ? null : {type: 'selection'};
+      default: return null;
+    }
+  }
   function resolveJumpPage(value, totalPages) {
     if (typeof value === 'string') {
       const trimmed = value.trim();
@@ -173,6 +198,8 @@ export function createWorkbench(config) {
     PAGE_SIZE,
     PAGE_SIZE_OPTIONS,
     pageSlice,
+    adjacentAsset,
+    detailShortcut,
     resolveJumpPage,
     paginationTokens,
     createBatchReviewIntent,

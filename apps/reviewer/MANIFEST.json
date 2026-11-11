@@ -18,8 +18,8 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 105080,
-      "sha256": "c1e97c083b56587dff73b9eb54255b7150b5516bc3121f1ae946c262fbbb3347"
+      "bytes": 107398,
+      "sha256": "6b703632e905e69146d09d4c8143f9308ede36897e17e701810d6c4f37862b90"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -78,8 +78,8 @@
       "sha256": "52de92913663dd828f91423172f739583d24e219fe40a348bbe447e0c6e77cb3"
     },
     "index.html": {
-      "bytes": 15759,
-      "sha256": "d15bbb411daf593bf05c0230758d4ab3ba08f63acf7d6bb7ab302b35dcea2a93"
+      "bytes": 16040,
+      "sha256": "d729912964c38296b8212bf30392bb8dfae67a502bcbe4ad7b0b7a436c09e4e0"
     },
     "package.json": {
       "bytes": 325,
@@ -170,20 +170,20 @@
       "sha256": "46c98a3b186791c48b21cc2dba3706e61e359f8cbc48e66d8d3b04251a82f7f1"
     },
     "shared/startup-state.mjs": {
-      "bytes": 1791,
-      "sha256": "e56dc1b8f507c30642d1903da401696ae9ecaaa7b349973eb52e3bd7a8268e1a"
+      "bytes": 1575,
+      "sha256": "febaae60dc68adcf75e138024c439e84c455369df8715c4f31ffad182d379d47"
     },
     "shared/viewer-adapter.mjs": {
       "bytes": 611,
       "sha256": "565da6cc68030e30561100f703d4709fc5a63f210b23c485c5d5866490869c29"
     },
     "shared/workbench.mjs": {
-      "bytes": 8376,
-      "sha256": "b1f5696f95dc1fde208404cfc4abd2162cf6319ed07e481480e6649dbdf98411"
+      "bytes": 9764,
+      "sha256": "90a09aed9a272d55a34d336977e7a15589bb273718e5d0e1688653c79d62c127"
     },
     "style.css": {
-      "bytes": 48875,
-      "sha256": "4ad9e72335b764403f14081088a5444eb61747d95f50f93a87a69e9176cd0ebb"
+      "bytes": 49891,
+      "sha256": "6de327feb2ff45cf91ea3424d01efe73111d2773c96ee0a3ed9a165cb361a2c1"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,
@@ -206,8 +206,8 @@
       "sha256": "dbc297d523fb3958790abf58a73f7983348c23133a0180315e2a7e9f13efc5a6"
     },
     "tests/workbench-actions.test.mjs": {
-      "bytes": 3180,
-      "sha256": "9f6dd0c380c5a34ad8ecf50cbc894334ffdda5efc6e7df521ccca564301a51aa"
+      "bytes": 5597,
+      "sha256": "09b5e9a3bd8266cb2369590a30d0109d2d4b11558680c26b29240f3bdeaee686"
     },
     "validate-workspace.mjs": {
       "bytes": 4451,
@@ -218,8 +218,8 @@
       "sha256": "0808abbe10a5fc3d8ed0031c809a4632579aebf25500b4662eaa2ac55212970d"
     },
     "viewer.mjs": {
-      "bytes": 85885,
-      "sha256": "9670617dcd4efe450231970f803156b58be21f28c42c1cf9b63ad8c7b663c3fd"
+      "bytes": 86052,
+      "sha256": "d2cdc94da1ddf3b6a7a2bf97a156f3e2c855c5ebe381b199c45093b1cd9d409b"
     }
   }
 }

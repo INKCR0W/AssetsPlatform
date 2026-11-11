@@ -60,7 +60,9 @@ const {
   paginationTokens,
   resolveJumpPage,
   createBatchReviewIntent,
-  selectionRange
+  selectionRange,
+  adjacentAsset,
+  detailShortcut
 } = createWorkbench(config);
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -73,6 +75,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 })[char]);
 const fmt = value => value === undefined || value === null ? '未提取' : Number(value).toLocaleString('zh-CN');
 const KEY = config.reviewKey;
+const AUTO_ADVANCE_KEY = 'assets-platform:reviewer:auto-advance';
 const PAGE_SIZE_KEY = 'assets-platform:reviewer:page-size';
 let catalog,
   objectCatalog,
@@ -105,6 +108,7 @@ let reviews = Object.create(null),
   selected = new Set(),
   storageOK = true,
   current = null,
+  detailOrder = [],
   filtered = [],
   pageItems = [],
   selectionAnchor = null,
@@ -267,7 +271,7 @@ function loadState() {
   storageOK = saved.ok;
 }
 function categoryLabel(id) {
-  return categoryLabels[id] || objectCatalog?.categories?.find(c => c.id === id)?.label || catalog?.categories?.find(c => c.id === id)?.label || typeLabels[id] || id || '其他';
+  return categoryLabels[id] || objectCatalog?.categories?.find(c => c.id === id)?.label || catalog?.categories?.find(c => c.id === id)?.label || typeLabels[id] || '其他';
 }
 function normalizeResource(record) {
   return {
@@ -373,7 +377,7 @@ function normalizeProfiles(data) {
       ...record,
       implemented: false,
       status: 'not-implemented',
-      description: record.description || '仅记录原始 Shader 证据，尚未移植为浏览器渲染。'
+      description: record.description || '源着色器资料。浏览器渲染待实现。'
     }));
   }
   const list = Array.isArray(data) ? data : data?.profiles || [];
@@ -394,7 +398,7 @@ function normalizeProfiles(data) {
       parameters: params,
       implemented,
       status: implemented ? 'evidence-based-approximation' : 'not-implemented',
-      description: approximation.description || record.description || record.summary || '依据已恢复的材质参数实现浏览器近似，不是原 Unity Shader。',
+      description: approximation.description || record.description || record.summary || '浏览器预览使用已恢复的材质参数。',
       unsupportedFeatures: record.unsupportedFeatures || approximation.unsupportedFeatures || [],
       sourceEvidence: record.sourceEvidence || [],
       raw: record
@@ -439,6 +443,11 @@ async function init() {
     state.pageSize = PAGE_SIZE;
   }
   $('#page-size').value = String(state.pageSize);
+  try {
+    $('#review-auto-advance').checked = browserStorage.getItem(AUTO_ADVANCE_KEY) !== 'false';
+  } catch {
+    $('#review-auto-advance').checked = true;
+  }
   try {
     projectData = await loadProjectData(project, readJSON);
     catalog = projectData.catalog;
@@ -740,6 +749,7 @@ function render() {
     card.querySelector('.card-preview').onclick = () => openDetail(item);
     card.querySelector('.card-body').onclick = () => openDetail(item);
     card.querySelector('.card-body').onkeydown = event => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         openDetail(item);
@@ -811,7 +821,7 @@ function toggleSelection(id, on) {
 }
 function metricHTML(item) {
   let rows;
-  if (item.isObject) rows = [[diagnostics.has(item.id) ? '启用模型资源' : '模型资源', relatedCount(item, 'mesh') || item.meshCount || '未关联'], [diagnostics.has(item.id) ? '启用材质' : '关联材质', relatedCount(item, 'material')], [diagnostics.has(item.id) ? '身体贴图' : '关联贴图', relatedCount(item, 'texture')], ['原始节点', item.nodeCount ?? '见层级']];else if (item.type === 'texture') rows = [['尺寸', `${item.width ?? '未知'} × ${item.height ?? '未知'}`], ['格式', item.format || '未提取'], ['Path ID', item.provenance?.pathId], ['预览', previewLabel(item)]];else if (item.type === 'animation') rows = [['时长', item.duration === undefined ? '未提取' : item.duration + ' 秒'], ['采样率', item.sampleRate], ['循环', item.loop === undefined ? '未提取' : item.loop ? '是' : '否'], ['播放', '本页未实现']];else if (item.type === 'program') rows = [['程序集', item.assembly], ['文件大小', fmt(item.byteSize) + ' B'], ['来源', 'ILSpy重建'], ['执行', '未执行']];else if (item.type === 'material') rows = [['Shader', item.shaderName], ['关联贴图', item.textureCount], ['浮点参数', item.floatParameterCount], ['颜色参数', item.colorParameterCount]];else rows = [['顶点', fmt(item.vertexCount)], ['三角面', fmt(item.triangleCount)], ['材质', item.materialIds?.length ?? '未关联'], ['骨骼', item.boneCount ?? '未提取']];
+  if (item.isObject) rows = [[diagnostics.has(item.id) ? '启用模型资源' : '模型资源', relatedCount(item, 'mesh') || item.meshCount || '未关联'], [diagnostics.has(item.id) ? '启用材质' : '关联材质', relatedCount(item, 'material')], [diagnostics.has(item.id) ? '身体贴图' : '关联贴图', relatedCount(item, 'texture')], ['原始节点', item.nodeCount ?? '见层级']];else if (item.type === 'texture') rows = [['尺寸', `${item.width ?? '未知'} × ${item.height ?? '未知'}`], ['格式', item.format || '未提取'], ['路径编号', item.provenance?.pathId], ['预览', previewLabel(item)]];else if (item.type === 'animation') rows = [['时长', item.duration === undefined ? '未提取' : item.duration + ' 秒'], ['采样率', item.sampleRate], ['循环', item.loop === undefined ? '未提取' : item.loop ? '是' : '否'], ['播放', '本页未实现']];else if (item.type === 'program') rows = [['程序集', item.assembly], ['文件大小', fmt(item.byteSize) + ' B'], ['来源', 'ILSpy重建'], ['执行', '未执行']];else if (item.type === 'material') rows = [['着色器', item.shaderName], ['关联贴图', item.textureCount], ['浮点参数', item.floatParameterCount], ['颜色参数', item.colorParameterCount]];else rows = [['顶点', fmt(item.vertexCount)], ['三角面', fmt(item.triangleCount)], ['材质', item.materialIds?.length ?? '未关联'], ['骨骼', item.boneCount ?? '未提取']];
   return rows.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value ?? '未提取')}</strong></div>`).join('');
 }
 function coverageText(item) {
@@ -868,7 +878,7 @@ function buildProfiles() {
     $('#' + id).innerHTML = options;
     $('#' + id).value = value;
   }
-  $('#profiles-content').innerHTML = '<p>渲染预设用于比较形体、颜色和光照，原始资产保持原样。</p>' + profiles.map(p => `<section class="profile-evidence-card"><h3>${esc(p.label)}</h3><p>${esc(p.implemented ? p.description || '' : '尚未支持')}</p>${p.unsupportedFeatures?.length ? `<details><summary>限制与参数</summary><p>${esc(p.unsupportedFeatures.join('；'))}</p><code>${esc(JSON.stringify(p.parameters || {}))}</code></details>` : ''}</section>`).join('');
+  $('#profiles-content').innerHTML = profiles.map(p => `<section class="profile-evidence-card"><h3>${esc(p.label)}</h3><p>${esc(p.implemented ? p.description || '' : '尚未支持')}</p>${p.unsupportedFeatures?.length ? `<details><summary>限制与参数</summary><p>${esc(p.unsupportedFeatures.join('；'))}</p><code>${esc(JSON.stringify(p.parameters || {}))}</code></details>` : ''}</section>`).join('');
 }
 function hasCanopyRule(item) {
   return item?.isObject && ((item.materialLinks || []).some(material => (materialRules.flatCanopySourceMaterialIds || []).includes(material.sourceId)) || (materialRules.flatCanopyTriangleRules || []).some(rule => (rule.objectSourceIds || []).includes(item.sourceId)));
@@ -924,7 +934,7 @@ function updateAnimationControls(state) {
   $('#animation-repeat').value = state.loopMode || 'source';
   const action = currentAction();
   const flowNote = action?.classification === 'derived_source_state_flow' ? '流程由 12 段源状态组成，30 条装弹事件保留为注释。' : '';
-  $('#animation-current-summary').textContent = action ? `${actionRole(action)}。${action.conditions || '播放范围为源片段的完整时域。'}${flowNote}` : '';
+  $('#animation-current-summary').textContent = action ? `${actionRole(action)}。${action.conditions || ''}${flowNote}` : '';
   const pose = action?.classification === 'static_pose';
   $('#animation-toggle').disabled = pose || actionGroup === 'references';
   $('#animation-repeat').disabled = pose || actionGroup === 'references';
@@ -978,7 +988,7 @@ function bindAnimationControls(item, record, preserved, animationData) {
       reason: '尚未转换或验证，仅保留源引用。'
     })) : animationData?.unsupportedClips || [];
   $('#animation-limitations').hidden = !unavailable.length;
-  $('#animation-limitations').innerHTML = unavailable.length ? `<summary>其余 ${unavailable.length} 个关联动作为什么暂不可播</summary><ul>${unavailable.map(clip => `<li><strong>${esc(clip.name || clip.sourceClipId)}</strong>：${esc(clip.reason || '目标或曲线未验证')}</li>`).join('')}</ul>` : '';
+  $('#animation-limitations').innerHTML = unavailable.length ? `<summary>暂不可播（${unavailable.length}）</summary><ul>${unavailable.map(clip => `<li><strong>${esc(clip.name || clip.sourceClipId)}</strong>：${esc(clip.reason || '目标或曲线未验证')}</li>`).join('')}</ul>` : '';
   const warnings = viewerA?.getAnimationDiagnostics?.() || viewerA?.animationWarnings || [];
   const limitations = [...(record?.limitations || []), ...warnings.filter(warning => !unavailable.some(clip => clip.sourceClipId === warning.clipId || clip.sourceClipId === warning.sourceClipId)).map(warning => warning.reason || String(warning))];
   $('#animation-overall-limitations').hidden = !limitations.length;
@@ -1146,7 +1156,7 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
     bindAnimationControls(item, animationRecord, preserved, animationData);
     $('#preview-caption').textContent = '';
     const playbackNote = $('#preview-playback-note');
-    playbackNote.textContent = animationClips.length ? '播放器使用已验证的源轨道或离线约束结果。播放范围可覆盖源片段的完整时域。纯事件片段无骨骼运动。原始轨道缺少逆向运动学约束。游戏脚本、物理、粒子、音效、事件、动态风和完整动画控制器未重现。' : '';
+    playbackNote.textContent = animationClips.length ? '播放器使用已验证的源轨道或离线约束结果。播放范围可覆盖源片段的完整时域。纯事件片段无骨骼运动。原始轨道缺少逆向运动学约束。物理、音效、事件和完整动画控制器未重现。' : '';
     $('#preview-interaction').textContent = comparison ? '双视图共享机位与动作时间。拖动旋转，滚轮缩放。' : '拖动旋转，滚轮缩放。';
     showModelWarnings(viewerA, viewerB);
   } catch (error) {
@@ -1195,11 +1205,11 @@ async function openDetail(item) {
     $('#profile-b').value = profileB;
   }
   $('#profile-a').value = profileA;
-  $('#detail-modal').showModal();
+  if (!$('#detail-modal').open) $('#detail-modal').showModal();
   $('#detail-title').textContent = item.name;
   $('#detail-id').textContent = item.sourceId || item.id;
-  const index = filtered.findIndex(a => a.id === item.id);
-  $('#detail-index').textContent = index >= 0 ? `${index + 1} / ${filtered.length}` : '';
+  detailOrder = [];
+  updateDetailNavigation(filterItems());
   $('#detail-tags').innerHTML = `<span id="detail-review" class="card-review"></span><span>${esc(item.isObject ? categoryLabel(item.category) : typeLabels[item.type] || '其他')}</span>`;
   $('#detail-selected').checked = selected.has(item.id);
   $('#detail-metrics').innerHTML = metricHTML(item);
@@ -1240,6 +1250,7 @@ async function openDetail(item) {
     $('#assembly-evidence').append(warning);
   }
   $('.detail-layout').scrollTop = 0;
+  $('.detail-info').scrollTop = 0;
   loadObjectHierarchy(item);
   loadItemEvidence(item);
   bindResourceDownloads(item, $('#detail-downloads'));
@@ -1267,7 +1278,7 @@ async function openResource(resource) {
         signal: resourceAbort.signal
       });
       if (request !== resourceRequest || $('#resource-modal').dataset.resourceId !== resourceId) return;
-      const sections = [['源浮点参数', metadata.floatParameters], ['源颜色参数', metadata.colorParameters], ['源 Shader 关键字', metadata.shaderKeywords], ['原始动画统计', metadata.animation || metadata.curveCounts]];
+      const sections = [['源浮点参数', metadata.floatParameters], ['源颜色参数', metadata.colorParameters], ['源着色器关键字', metadata.shaderKeywords], ['原始动画统计', metadata.animation || metadata.curveCounts]];
       for (const [label, data] of sections) {
         if (!data) continue;
         const detail = document.createElement('details');
@@ -1275,9 +1286,6 @@ async function openResource(resource) {
         const summary = document.createElement('summary');
         summary.textContent = label;
         detail.append(summary);
-        const note = document.createElement('p');
-        note.textContent = '这是源记录，不表示网页着色器已实现全部参数。';
-        detail.append(note);
         const list = document.createElement('dl');
         for (const [key, value] of Object.entries(data)) {
           const term = document.createElement('dt'),
@@ -1332,7 +1340,11 @@ async function loadObjectHierarchy(item) {
 }
 function updateReviewButtons() {
   const status = reviewOf(current).status;
-  $$('.review-buttons button').forEach(button => button.classList.toggle('active', button.dataset.status === status));
+  $$('.review-buttons button').forEach(button => {
+    const active = button.dataset.status === status;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   const tag = $('#detail-review');
   tag.className = 'card-review ' + status;
   tag.textContent = REVIEW_STATUSES[status];
@@ -1344,7 +1356,7 @@ function setSaveStatus(message, isError = false) {
   status.textContent = message;
 }
 function showSaveStatus() {
-  setSaveStatus(storageOK ? '已保存' : '⚠ 保存失败，请导出备份', !storageOK);
+  setSaveStatus(storageOK ? '已保存' : '保存失败，请导出备份', !storageOK);
   if (storageOK) saveStatusTimer = setTimeout(() => {
     const status = $('#save-status');
     if (status.textContent === '已保存') status.textContent = '';
@@ -1380,6 +1392,7 @@ function closeDetail() {
   viewerB = null;
   showModelWarnings();
   current = null;
+  detailOrder = [];
   render();
 }
 function resetFilters() {
@@ -1483,9 +1496,6 @@ function exportCSV() {
 function buildAudit() {
   const content = $('#audit-content');
   content.replaceChildren();
-  const intro = document.createElement('p');
-  intro.textContent = config.label;
-  content.append(intro);
   for (const section of config.auditSections || []) {
     const heading = document.createElement('h3');
     heading.textContent = section.title;
@@ -1500,7 +1510,7 @@ function buildAudit() {
   }
   const button = document.createElement('button');
   button.className = 'primary-btn';
-  button.textContent = '导出目录';
+  button.textContent = '导出';
   button.onclick = () => exportJSON(true);
   content.append(button);
   const snapshot = document.createElement('button');
@@ -1581,7 +1591,7 @@ $('#empty-reset').onclick = resetFilters;
 $('#page-prev').onclick = () => goToPage(state.page - 1);
 $('#page-next').onclick = () => goToPage(state.page + 1);
 $('#page-jump').onkeydown = event => {
-  if (event.key !== 'Enter') return;
+  if (event.key !== 'Enter' || event.altKey || event.ctrlKey || event.metaKey) return;
   event.preventDefault();
   goToPage(event.target.value);
   event.target.value = String(state.page);
@@ -1589,14 +1599,12 @@ $('#page-jump').onkeydown = event => {
 $('#page-size').onchange = event => {
   const size = Number(event.target.value);
   if (!PAGE_SIZE_OPTIONS.includes(size)) return;
+  state.pageSize = size;
   try {
     browserStorage.setItem(PAGE_SIZE_KEY, String(size));
-    state.pageSize = size;
   } catch {
-    state.pageSize = PAGE_SIZE;
-    showToast('每页条数保存失败');
+    showToast('未能保存');
   }
-  event.target.value = String(state.pageSize);
   state.page = 1;
   render();
 };
@@ -1652,14 +1660,29 @@ $('#resource-modal').addEventListener('close', () => {
 $('#compare-modal').addEventListener('close', () => {
   if (!$('#detail-modal').open) scheduleCardPreviews();
 });
-$$('.review-buttons button').forEach(button => button.onclick = () => {
+$('#review-auto-advance').onchange = event => {
+  try {
+    browserStorage.setItem(AUTO_ADVANCE_KEY, String(event.target.checked));
+  } catch {
+    showToast('未能保存');
+  }
+};
+$$('.review-buttons button').forEach(button => button.onclick = () => markReview(button.dataset.status));
+
+function markReview(status, advance = false) {
   if (!current) return;
   saveComment();
-  persist({patch: {id: current.id, status: button.dataset.status, updatedAt: new Date().toISOString()}});
+  const next = advance && $('#review-auto-advance').checked
+    ? adjacentAsset(reviewOrder(filterItems()), current.id, 1)
+    : null;
+  const saved = persist({patch: {id: current.id, status, updatedAt: new Date().toISOString()}});
+  const rows = filterItems();
   updateReviewButtons();
+  updateDetailNavigation(rows);
   renderStats();
+  if (saved && next) showAdjacent(next, rows);
   showSaveStatus();
-});
+}
 $('#comment').oninput = () => {
   commentDirty = true;
   clearTimeout(commentTimer);
@@ -1692,17 +1715,68 @@ $('#profile-b').onchange = event => {
   viewerB?.setProfile(viewerProfile(profileById(profileB)));
   updateProfileNotes();
 };
+function reviewOrder(rows) {
+  if (rows.includes(current)) {
+    detailOrder = rows;
+    return rows;
+  }
+  // The current asset can leave the filter when its review status changes.
+  const visible = new Set(rows);
+  return detailOrder.filter(item => item === current || visible.has(item));
+}
+function updateDetailNavigation(rows) {
+  const index = rows.indexOf(current);
+  $('#detail-index').textContent = index >= 0 ? `${index + 1} / ${rows.length}` : '';
+  const order = reviewOrder(rows);
+  $('#prev-asset').disabled = !adjacentAsset(order, current.id, -1);
+  $('#next-asset').disabled = !adjacentAsset(order, current.id, 1);
+}
+function showAdjacent(item, rows) {
+  const index = rows.indexOf(item);
+  if (index < 0) return;
+  state.page = Math.floor(index / state.pageSize) + 1;
+  openDetail(item);
+}
 function adjacent(direction) {
-  if (!current || !filtered.length) return;
-  const index = filtered.findIndex(item => item.id === current.id);
-  openDetail(filtered[(index + direction + filtered.length) % filtered.length]);
+  if (!current) return;
+  saveComment();
+  const rows = filterItems();
+  const target = adjacentAsset(reviewOrder(rows), current.id, direction);
+  if (target) showAdjacent(target, rows);
 }
 $('#prev-asset').onclick = () => adjacent(-1);
 $('#next-asset').onclick = () => adjacent(1);
 document.addEventListener('keydown', event => {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
   const active = document.activeElement;
-  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey ||
-    active?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName) || $$('dialog[open]').length) return;
+  const editing = active?.isContentEditable || active?.matches('textarea, select, input:not([type=checkbox])');
+  const dialogs = [...document.querySelectorAll('dialog[open]')];
+  const detail = $('#detail-modal');
+  if (dialogs.length) {
+    if (dialogs.length !== 1 || dialogs[0] !== detail || !current) return;
+    const action = detailShortcut(event, {
+      editing,
+      commentFocused: active === $('#comment'),
+      spaceTarget: active?.matches('button, a, summary, input[type=checkbox]:not(#detail-selected)'),
+      viewerFocused: active?.tagName === 'CANVAS'
+    });
+    if (!action) return;
+    event.preventDefault();
+    if (event.repeat && ['review', 'blurComment', 'close', 'selection'].includes(action.type)) return;
+    switch (action.type) {
+      case 'review': markReview(action.status, true); break;
+      case 'adjacent': adjacent(action.direction); break;
+      case 'comment': $('#comment').focus(); break;
+      case 'blurComment':
+        saveComment();
+        $('.preview-panel').focus({preventScroll: true});
+        break;
+      case 'close': detail.close(); break;
+      case 'selection': $('#detail-selected').click(); break;
+    }
+    return;
+  }
+  if (editing || active?.tagName === 'INPUT') return;
   if (event.key === '/') {
     event.preventDefault();
     $('#search').focus();
@@ -1710,7 +1784,7 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     goToPage(state.page + (event.key === '[' || event.key === 'PageUp' ? -1 : 1));
   }
-});
+}, {capture: true});
 $('#animation-mode').onchange = event => changeAnimationMode(event.target.value);
 $('#animation-stop').onclick = () => {
   pausePlayback();

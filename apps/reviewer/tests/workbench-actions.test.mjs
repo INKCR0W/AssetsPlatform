@@ -3,7 +3,7 @@ import test from 'node:test';
 import {createReviewWriter} from '../shared/selection-state.mjs';
 import {createWorkbench} from '../shared/workbench.mjs';
 
-const {pageSlice, resolveJumpPage, createBatchReviewIntent, selectionRange} = createWorkbench({});
+const {pageSlice, adjacentAsset, detailShortcut, resolveJumpPage, createBatchReviewIntent, selectionRange} = createWorkbench({});
 
 test('page slices use the requested size and keep the default for existing callers', () => {
   const items = Array.from({length: 63}, (_, index) => index + 1);
@@ -41,6 +41,48 @@ test('jump input clamps numeric pages and ignores nonnumeric input', () => {
   for (const value of ['', ' ', 'three', '4a', '0x10', 'Infinity', NaN, null, true]) {
     assert.equal(resolveJumpPage(value, 6), null);
   }
+});
+
+test('detail navigation follows the complete display order and stops at the ends', () => {
+  const items = ['d', 'a', 'c', 'b', 'e'].map(id => ({id}));
+  assert.equal(adjacentAsset(items, 'a', 1), items[2]);
+  assert.equal(adjacentAsset(items, 'c', -1), items[1]);
+  assert.equal(adjacentAsset(items, 'b', 1), items[4]);
+  assert.equal(adjacentAsset(items, 'e', 1), null);
+  assert.equal(adjacentAsset(items, 'd', -1), null);
+  assert.equal(adjacentAsset(items, 'missing', 1), null);
+  assert.equal(adjacentAsset([], 'a', 1), null);
+});
+
+test('detail shortcuts map review, navigation, comment, close and selection keys', () => {
+  for (const [key, status] of [['1', 'keep'], ['2', 'check'], ['3', 'skip'], ['0', 'pending']]) {
+    assert.deepEqual(detailShortcut({key}), {type: 'review', status});
+  }
+  for (const [key, direction] of [['ArrowLeft', -1], ['k', -1], ['K', -1], ['ArrowRight', 1], ['j', 1], ['J', 1]]) {
+    assert.deepEqual(detailShortcut({key}), {type: 'adjacent', direction});
+  }
+  assert.deepEqual(detailShortcut({key: 'c'}), {type: 'comment'});
+  assert.deepEqual(detailShortcut({key: 'C'}), {type: 'comment'});
+  assert.deepEqual(detailShortcut({key: 'Escape'}), {type: 'close'});
+  assert.deepEqual(detailShortcut({key: ' '}), {type: 'selection'});
+  for (const key of ['/', '[', ']', 'PageUp', 'PageDown', 'Tab', 'Enter']) {
+    assert.equal(detailShortcut({key}), null);
+  }
+});
+
+test('detail shortcuts respect input focus, composition, modifiers and handled events', () => {
+  for (const key of ['1', '2', '3', '0', 'ArrowLeft', 'ArrowRight', 'j', 'k', 'c', ' ', 'Escape']) {
+    for (const property of ['defaultPrevented', 'isComposing', 'ctrlKey', 'altKey', 'metaKey']) {
+      assert.equal(detailShortcut({key, [property]: true}), null, `${property} ${key}`);
+    }
+    if (key === 'Escape') continue;
+    assert.equal(detailShortcut({key}, {editing: true}), null);
+    assert.equal(detailShortcut({key}, {commentFocused: true}), null);
+  }
+  assert.deepEqual(detailShortcut({key: 'Escape'}, {editing: true, commentFocused: true}), {type: 'blurComment'});
+  assert.equal(detailShortcut({key: ' '}, {spaceTarget: true}), null);
+  for (const key of ['ArrowLeft', 'ArrowRight', '0']) assert.equal(detailShortcut({key}, {viewerFocused: true}), null);
+  assert.deepEqual(detailShortcut({key: '1'}, {viewerFocused: true}), {type: 'review', status: 'keep'});
 });
 
 test('batch review intent changes only status and timestamp and rebases against current comments', () => {
