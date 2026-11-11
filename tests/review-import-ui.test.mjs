@@ -673,7 +673,7 @@ test('public detail shows only the active model warnings across compare and view
   assert.equal(warningPanel.hidden, false);
   assert.deepEqual(messages(), warningA);
   assert(h.get('#model-warnings-list').children.every(entry => entry.innerHTML === undefined));
-  assert.match(h.get('#preview-caption').textContent, /拖动旋转/);
+  assert.match(h.get('#preview-interaction').textContent, /拖动旋转/);
   assert.equal(h.get('#animation-status').textContent, '');
 
   const comparison = deferred();

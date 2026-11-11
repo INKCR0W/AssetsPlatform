@@ -35,7 +35,7 @@ test('standalone imported workspace loads through real HTTP, loader, adapter and
   const project=await loadProject({fetchJSON,location:{href:base,search:''}});assert.equal(project.config.projectId,x.id);assert.equal(project.config.datasetId,report.datasetId);
   const data=await loadProjectData(project,fetchJSON);assert.equal(data.catalog.assets.length,1);assert.equal(data.objectCatalog.objects.length,1);
   const model=data.catalog.assets[0];assert(model.triangleCount>0);assert(model.vertexCount>0);assert.equal((await fetch(base+'library/assets/preview-pending.svg')).status,200);const url=project.config.resourceResolver.resolve(model.modelUrl);const response=await fetch(url);assert.equal(response.status,200);assert(parseGLB(await response.arrayBuffer()).triangles>0);
-  const html=await (await fetch(base)).text();assert(html.includes('ASSET REVIEW'));
+  const html=await (await fetch(base)).text();assert(html.includes('资产检查站'));
   for (const relative of ['app.mjs','viewer.mjs','shared/project-loader.mjs','adapters/indexed-data.mjs','style.css']) assert.equal((await fetch(base+relative)).status,200);
  } finally {
   try {

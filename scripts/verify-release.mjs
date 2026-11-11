@@ -32,7 +32,7 @@ const server=startLocalTestServer(path.join(app,'server.mjs'),{port});
 try{
  await server.waitUntilReady();
  const base=`http://127.0.0.1:${port}`;
- let res=await fetch(base+'/');assert.equal(res.status,200);assert((await res.text()).includes('ASSET REVIEW'));
+ let res=await fetch(base+'/');assert.equal(res.status,200);assert((await res.text()).includes('资产检查站'));
  res=await fetch(base+'/project-directory.json');assert.equal((await res.json()).projects.length,2);
  res=await fetch(base+'/demo-a/assets/cube.glb',{method:'HEAD'});assert.equal(res.status,200);assert.equal((await res.arrayBuffer()).byteLength,0);
  res=await fetch(base+'/',{method:'POST'});assert.equal(res.status,405);

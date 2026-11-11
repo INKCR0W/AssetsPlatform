@@ -1,18 +1,15 @@
 // DOM/UI composition belongs only in the common frontend, never data adapters.
 export function configureShell({project,state,onFacets,onLayout,onDataset,onProjectLeave}){
  const {config,directory,entry}=project,$=id=>document.getElementById(id);
- document.title=config.label+' · 资产检查站';
- $('project-brand').textContent='ASSET REVIEW';$('project-label').textContent=config.label;$('project-footer').textContent=config.label.toUpperCase()+' · ASSET REVIEW';
+ document.title=config.label;
+ $('project-label').textContent=config.label;
  const select=$('project-switch');select.replaceChildren();for(const p of directory.projects){const option=document.createElement('option');option.value=p.id;option.textContent=p.label||p.id;select.append(option)}select.value=entry.id;
  select.onchange=()=>{if(!directory.projects.some(p=>p.id===select.value))throw Error('Unknown registered project');onProjectLeave?.();const url=new URL(location.href);url.searchParams.set('project',select.value);location.assign(url.href)};
  // Full navigation intentionally terminates the old renderer/queue/storage realm.
  // The new descriptor receives a fresh project+dataset cache namespace.
- for(const [id,visible]of [['weapons-btn',config.capabilities.weaponSpotlight],['weapon-effects-btn',config.capabilities.effects],['research-btn',config.capabilities.research],['animation-filter',config.capabilities.animationFilters],['animation-filter-hint',config.capabilities.animationFilters],['offline-consumer-link',config.sharedSelections]]){const control=$(id);if(control)control.hidden=!visible};
+ for(const [id,visible]of [['weapons-btn',config.capabilities.weaponSpotlight],['weapon-effects-btn',config.capabilities.effects],['research-btn',config.capabilities.research],['animation-filter',config.capabilities.animationFilters],['offline-consumer-link',config.sharedSelections]]){const control=$(id);if(control)control.hidden=!visible};
 
- $('default-profile-note').textContent='保留此浏览器已选模式 · '+(config.defaultProfileLabel||'按项目能力提供');
- const stats=[['可预览物件','有模型资源可供查看'],['物件总数','当前目录收录的物件'],['资源总数','模型、贴图、材质等关联资源']];
- document.querySelectorAll('.stats > div').forEach((el,i)=>{if(i<3){el.querySelector('span').textContent=stats[i][0];el.querySelector('small').textContent=stats[i][1]}});
- const facets=$('facet-filters');facets.replaceChildren();for(const spec of config.facets||[]){const label=document.createElement('label');label.textContent=spec.label;const control=document.createElement('select');control.dataset.facet=spec.key;control.setAttribute('aria-label',spec.label);for(const option of spec.options){const el=document.createElement('option');el.value=option.value;el.textContent=option.label;control.append(el)}control.value=state.facets[spec.key]??'all';control.onchange=()=>onFacets(spec.key,control.value);label.append(control);facets.append(label)}
+ const facets=$('facet-filters');facets.replaceChildren();for(const spec of config.facets||[]){const control=document.createElement('select');control.dataset.facet=spec.key;control.setAttribute('aria-label',spec.label);for(const option of spec.options){const el=document.createElement('option');el.value=option.value;el.textContent=option.value==='all'?spec.label:option.label;control.append(el)}control.value=state.facets[spec.key]??'all';control.onchange=()=>onFacets(spec.key,control.value);facets.append(control)}
  for(const layout of ['grid','list'])$('layout-'+layout).onclick=()=>{onLayout(layout);for(const other of ['grid','list'])$('layout-'+other).setAttribute('aria-pressed',String(layout===other))};
  $('dataset-select').onchange=event=>onDataset(event.target.value);
 }

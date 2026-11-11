@@ -1,9 +1,9 @@
 export function createWorkbench(config) {
   const REVIEW_STATUSES = Object.freeze({
-    pending: '未审阅',
+    pending: '未审',
     keep: '保留',
-    check: '待检查',
-    skip: '暂不用'
+    check: '待查',
+    skip: '不用'
   });
   function validReview(value) {
     return value && typeof value === 'object' && !Array.isArray(value) && typeof value.status === 'string' && Object.hasOwn(REVIEW_STATUSES, value.status) && (value.comment === undefined || typeof value.comment === 'string');
