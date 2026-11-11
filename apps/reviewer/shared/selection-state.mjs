@@ -50,7 +50,11 @@ function applySelections(ids, intents) {
 function applyReviews(reviews, intents) {
  const result = Object.assign(Object.create(null), reviews);
  for (const intent of intents) {
-  for (const [id, review] of Object.entries(intent.reviews || {})) result[id] = {...review};
+  for (const [id, review] of Object.entries(intent.reviews || {})) {
+   result[id] = intent.mergeReviews
+    ? {status: 'pending', comment: '', ...result[id], ...review}
+    : {...review};
+  }
   if (intent.patch) {
    const {id, ...fields} = intent.patch;
    result[id] = {status: 'pending', comment: '', ...result[id], ...fields};

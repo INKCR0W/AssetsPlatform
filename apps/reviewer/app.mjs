@@ -55,8 +55,12 @@ const {
   readDefaultProfile,
   writeDefaultProfile,
   PAGE_SIZE,
+  PAGE_SIZE_OPTIONS,
   pageSlice,
-  paginationTokens
+  paginationTokens,
+  resolveJumpPage,
+  createBatchReviewIntent,
+  selectionRange
 } = createWorkbench(config);
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -69,6 +73,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 })[char]);
 const fmt = value => value === undefined || value === null ? '未提取' : Number(value).toLocaleString('zh-CN');
 const KEY = config.reviewKey;
+const PAGE_SIZE_KEY = 'assets-platform:reviewer:page-size';
 let catalog,
   objectCatalog,
   profileSources = [],
@@ -82,6 +87,8 @@ let catalog,
   sourceMap = new Map();
 let state = {
   ...createWorkbenchState(),
+  page: resolveJumpPage(new URL(location.href).searchParams.get('page'), Number.MAX_SAFE_INTEGER) ?? 1,
+  pageSize: PAGE_SIZE,
   animation: 'all',
   facets: {
     ...(config.defaultFacets || {})
@@ -99,6 +106,8 @@ let reviews = Object.create(null),
   storageOK = true,
   current = null,
   filtered = [],
+  pageItems = [],
+  selectionAnchor = null,
   comparison = false,
   viewerA = null,
   viewerB = null,
@@ -115,6 +124,7 @@ let reviews = Object.create(null),
   },
   commentTimer,
   saveStatusTimer,
+  batchSaveTimer,
   toastTimer;
 let weaponEffects = null,
   animationMode = 'constraint',
@@ -242,11 +252,7 @@ function persist(intent) {
     render();
   } else if (selectionRebased) {
     // Keep existing cards (and keyboard focus) when only selection decoration changed.
-    $$('.asset-card').forEach(card => {
-      const checked = selected.has(card.dataset.id);
-      card.querySelector('.card-check').checked = checked;
-      card.classList.toggle('selected', checked);
-    });
+    updateSelectionCards();
     renderStats();
   }
   if (selectionRebased && current) $('#detail-selected').checked = selected.has(current.id);
@@ -427,6 +433,13 @@ async function readJSON(url, required = true, options = {}) {
 async function init() {
   loadState();
   try {
+    const size = Number(browserStorage.getItem(PAGE_SIZE_KEY));
+    if (PAGE_SIZE_OPTIONS.includes(size)) state.pageSize = size;
+  } catch {
+    state.pageSize = PAGE_SIZE;
+  }
+  $('#page-size').value = String(state.pageSize);
+  try {
     projectData = await loadProjectData(project, readJSON);
     catalog = projectData.catalog;
     objectCatalog = projectData.objectCatalog;
@@ -560,6 +573,9 @@ function renderStats() {
   $('#selection-bar').hidden = !selected.size;
   $('#selection-number').textContent = selected.size;
   $('#compare-btn').disabled = selected.size < 2 || selected.size > 4;
+  $('#page-selection').hidden = !pageItems.length;
+  $('#select-page').disabled = pageItems.every(item => selected.has(item.id));
+  $('#deselect-page').disabled = pageItems.every(item => !selected.has(item.id));
 }
 function canPlayAnimation(item) {
   const record = animationRecords.get(item.id);
@@ -689,9 +705,15 @@ function cardHTML(item) {
 }
 function render() {
   document.body.dataset.mode = isObjectView() ? 'objects' : 'technical';
-  filtered = filterItems();
-  const page = pageSlice(filtered, state.page);
+  const rows = filterItems();
+  if (selectionAnchor && (rows.length !== filtered.length || rows.some((item, index) => item !== filtered[index]))) {
+    selectionAnchor = null;
+  }
+  filtered = rows;
+  const page = pageSlice(filtered, state.page, state.pageSize);
   state.page = page.page;
+  pageItems = page.items;
+  syncPageURL();
   $('#grid').className = 'grid' + (isObjectView() ? ' object-grid' : '') + (state.layout === 'list' ? ' list-view' : '');
   $('#grid').innerHTML = page.items.map(cardHTML).join('');
   $('#empty').hidden = filtered.length > 0;
@@ -706,9 +728,14 @@ function render() {
   });
   $$('.asset-card').forEach(card => {
     const item = itemMap.get(card.dataset.id);
-    card.querySelector('.card-check').onchange = event => {
-      toggleSelection(item.id, event.target.checked);
-      if (state.view === 'selected') render();else card.classList.toggle('selected', event.target.checked);
+    const checkbox = card.querySelector('.card-check');
+    let shiftClick = false;
+    checkbox.onclick = event => { shiftClick = event.shiftKey; };
+    checkbox.onchange = event => {
+      const ids = shiftClick ? selectionRange(filtered, selectionAnchor, item.id) : [item.id];
+      shiftClick = false;
+      selectionAnchor = item.id;
+      updateListSelection(ids, event.target.checked);
     };
     card.querySelector('.card-preview').onclick = () => openDetail(item);
     card.querySelector('.card-body').onclick = () => openDetail(item);
@@ -728,16 +755,33 @@ function render() {
   scheduleCardPreviews();
 }
 function renderPagination(page) {
-  $('#shown-count').textContent = page.total ? `显示 ${fmt(page.start)}–${fmt(page.end)} / ${fmt(page.total)} 项` : '显示 0 / 0 项';
-  $('#page-summary').textContent = page.total ? `第 ${page.page} / ${page.totalPages} 页 · 每页 ${PAGE_SIZE} 项` : `没有匹配结果 · 每页 ${PAGE_SIZE} 项`;
+  const hasMultiplePages = page.totalPages > 1;
+  $('#shown-count').textContent = hasMultiplePages
+    ? `${fmt(page.start)}–${fmt(page.end)} / ${fmt(page.total)} 项`
+    : `${fmt(page.total)} 项`;
+  $('#page-controls').hidden = $('#page-summary').hidden = !hasMultiplePages;
+  $('#page-jump').value = String(page.page);
   $('#page-prev').disabled = !page.hasPrevious;
   $('#page-next').disabled = !page.hasNext;
   $('#page-numbers').innerHTML = paginationTokens(page.page, page.totalPages).map(token => typeof token === 'number' ? `<button class="page-number ${token === page.page ? 'active' : ''}" data-page="${token}" aria-label="第 ${token} 页" ${token === page.page ? 'aria-current="page"' : ''}>${token}</button>` : '<span class="page-ellipsis" aria-hidden="true">…</span>').join('');
   $$('[data-page]').forEach(button => button.onclick = () => goToPage(Number(button.dataset.page)));
   $('#grid').setAttribute('aria-label', page.total ? `第 ${page.page} 页，显示第 ${page.start} 至 ${page.end} 项，共 ${page.total} 项` : '没有匹配资产');
 }
+function syncPageURL() {
+  const url = new URL(location.href);
+  if (state.page === 1) {
+    if (!url.searchParams.has('page')) return;
+    url.searchParams.delete('page');
+  } else {
+    if (url.searchParams.get('page') === String(state.page)) return;
+    url.searchParams.set('page', state.page);
+  }
+  globalThis.history?.replaceState(history.state, '', url.href);
+}
 function goToPage(requestedPage) {
-  state.page = pageSlice(filtered, requestedPage).page;
+  const page = resolveJumpPage(requestedPage, Math.ceil(filtered.length / state.pageSize));
+  if (page === null || page === state.page) return;
+  state.page = page;
   render();
   const grid = $('#grid');
   grid.focus({
@@ -747,6 +791,19 @@ function goToPage(requestedPage) {
     block: 'start',
     behavior: 'auto'
   });
+}
+function updateSelectionCards() {
+  $$('.asset-card').forEach(card => {
+    const checked = selected.has(card.dataset.id);
+    card.querySelector('.card-check').checked = checked;
+    card.classList.toggle('selected', checked);
+  });
+  renderStats();
+}
+function updateListSelection(ids, on) {
+  if (!ids.length) return;
+  persist({selection: on ? {add: ids} : {remove: ids}});
+  if (state.view === 'selected') render();else updateSelectionCards();
 }
 function toggleSelection(id, on) {
   persist({selection: on ? {add: [id]} : {remove: [id]}});
@@ -1523,6 +1580,28 @@ $('#clear-filters').onclick = resetFilters;
 $('#empty-reset').onclick = resetFilters;
 $('#page-prev').onclick = () => goToPage(state.page - 1);
 $('#page-next').onclick = () => goToPage(state.page + 1);
+$('#page-jump').onkeydown = event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  goToPage(event.target.value);
+  event.target.value = String(state.page);
+};
+$('#page-size').onchange = event => {
+  const size = Number(event.target.value);
+  if (!PAGE_SIZE_OPTIONS.includes(size)) return;
+  try {
+    browserStorage.setItem(PAGE_SIZE_KEY, String(size));
+    state.pageSize = size;
+  } catch {
+    state.pageSize = PAGE_SIZE;
+    showToast('每页条数保存失败');
+  }
+  event.target.value = String(state.pageSize);
+  state.page = 1;
+  render();
+};
+$('#select-page').onclick = () => updateListSelection(pageItems.map(item => item.id), true);
+$('#deselect-page').onclick = () => updateListSelection(pageItems.map(item => item.id), false);
 $$('[data-bg]').forEach(button => button.onclick = () => {
   state.bg = button.dataset.bg;
   $$('[data-bg]').forEach(other => other.classList.toggle('active', other === button));
@@ -1532,8 +1611,21 @@ $$('[data-bg]').forEach(button => button.onclick = () => {
 });
 $('#clear-selection').onclick = () => {
   persist({selection: {clear: true}});
+  selectionAnchor = null;
   render();
 };
+$$('[data-batch-status]').forEach(button => button.onclick = () => {
+  if (!selected.size || (selected.size > PAGE_SIZE && !confirm(`标记已选的 ${selected.size} 项资产？`))) return;
+  const intent = createBatchReviewIntent(selected, button.dataset.batchStatus, new Date().toISOString());
+  const saved = persist(intent);
+  renderNavigation();
+  render();
+  const status = $('#batch-save-status');
+  clearTimeout(batchSaveTimer);
+  status.textContent = saved ? '已保存' : '';
+  if (saved) batchSaveTimer = setTimeout(() => { status.textContent = ''; }, 1800);
+  else showToast('保存失败，请导出备份');
+});
 $('#compare-btn').onclick = compareSelected;
 $('#export-csv').onclick = exportCSV;
 $('#export-json').onclick = () => exportJSON(false);
@@ -1608,9 +1700,15 @@ function adjacent(direction) {
 $('#prev-asset').onclick = () => adjacent(-1);
 $('#next-asset').onclick = () => adjacent(1);
 document.addEventListener('keydown', event => {
-  if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && !$$('dialog[open]').length) {
+  const active = document.activeElement;
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey ||
+    active?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName) || $$('dialog[open]').length) return;
+  if (event.key === '/') {
     event.preventDefault();
     $('#search').focus();
+  } else if (event.key === '[' || event.key === 'PageUp' || event.key === ']' || event.key === 'PageDown') {
+    event.preventDefault();
+    goToPage(state.page + (event.key === '[' || event.key === 'PageUp' ? -1 : 1));
   }
 });
 $('#animation-mode').onchange = event => changeAnimationMode(event.target.value);

@@ -4,7 +4,7 @@ export function configureShell({project,state,onFacets,onLayout,onDataset,onProj
  document.title=config.label;
  $('project-label').textContent=config.label;
  const select=$('project-switch');select.replaceChildren();for(const p of directory.projects){const option=document.createElement('option');option.value=p.id;option.textContent=p.label||p.id;select.append(option)}select.value=entry.id;
- select.onchange=()=>{if(!directory.projects.some(p=>p.id===select.value))throw Error('Unknown registered project');onProjectLeave?.();const url=new URL(location.href);url.searchParams.set('project',select.value);location.assign(url.href)};
+ select.onchange=()=>{if(!directory.projects.some(p=>p.id===select.value))throw Error('Unknown registered project');onProjectLeave?.();const url=new URL(location.href);url.searchParams.set('project',select.value);url.searchParams.delete('page');location.assign(url.href)};
  // Full navigation intentionally terminates the old renderer/queue/storage realm.
  // The new descriptor receives a fresh project+dataset cache namespace.
  for(const [id,visible]of [['weapons-btn',config.capabilities.weaponSpotlight],['weapon-effects-btn',config.capabilities.effects],['research-btn',config.capabilities.research],['animation-filter',config.capabilities.animationFilters],['offline-consumer-link',config.sharedSelections]]){const control=$(id);if(control)control.hidden=!visible};

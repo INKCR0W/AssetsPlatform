@@ -90,14 +90,19 @@ export function createWorkbench(config) {
       };
     }
   }
-  const PAGE_SIZE = 20;
-  function pageSlice(items, requestedPage = 1) {
+  const PAGE_SIZE_OPTIONS = Object.freeze([20, 50, 100]);
+  const PAGE_SIZE = PAGE_SIZE_OPTIONS[0];
+  function clampPage(page, totalPages) {
+    return Math.min(Math.max(1, Math.floor(page)), Math.max(1, totalPages));
+  }
+  function pageSlice(items, requestedPage = 1, pageSize = PAGE_SIZE) {
+    const size = Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : PAGE_SIZE;
     const total = items.length,
-      totalPages = Math.ceil(total / PAGE_SIZE);
+      totalPages = Math.ceil(total / size);
     const numeric = Number(requestedPage);
-    const page = Math.min(Math.max(1, Number.isFinite(numeric) ? Math.floor(numeric) : 1), Math.max(1, totalPages));
-    const start = total ? (page - 1) * PAGE_SIZE + 1 : 0,
-      end = Math.min(page * PAGE_SIZE, total);
+    const page = clampPage(Number.isFinite(numeric) ? numeric : 1, totalPages);
+    const start = total ? (page - 1) * size + 1 : 0,
+      end = Math.min(page * size, total);
     return {
       items: items.slice(total ? start - 1 : 0, end),
       page,
@@ -108,6 +113,14 @@ export function createWorkbench(config) {
       hasPrevious: page > 1,
       hasNext: page < totalPages
     };
+  }
+  function resolveJumpPage(value, totalPages) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) return null;
+      value = Number(trimmed);
+    }
+    return Number.isFinite(value) ? clampPage(value, totalPages) : null;
   }
   function paginationTokens(page, totalPages) {
     if (totalPages <= 7) return Array.from({
@@ -132,6 +145,20 @@ export function createWorkbench(config) {
     }
     return result;
   }
+  function createBatchReviewIntent(ids, status, updatedAt) {
+    if (!Object.hasOwn(REVIEW_STATUSES, status)) throw new TypeError('Invalid review status');
+    const reviews = Object.fromEntries(Array.from(ids, id => [id, {status, updatedAt}]));
+    return {reviews, mergeReviews: true};
+  }
+  function selectionRange(items, anchorId, targetId) {
+    const targetIndex = items.findIndex(item => item.id === targetId);
+    if (targetIndex < 0) return [];
+    const anchorIndex = items.findIndex(item => item.id === anchorId);
+    if (anchorIndex < 0) return [targetId];
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    return items.slice(start, end + 1).map(item => item.id);
+  }
   return {
     REVIEW_STATUSES,
     validReview,
@@ -144,8 +171,12 @@ export function createWorkbench(config) {
     readDefaultProfile,
     writeDefaultProfile,
     PAGE_SIZE,
+    PAGE_SIZE_OPTIONS,
     pageSlice,
-    paginationTokens
+    resolveJumpPage,
+    paginationTokens,
+    createBatchReviewIntent,
+    selectionRange
   };
 }
 export function createWorkbenchState() {

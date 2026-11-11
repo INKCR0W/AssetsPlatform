@@ -18,8 +18,8 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 101357,
-      "sha256": "696f6d3048fd9e3147e482f12c4a8df55b751bd66b437c988506d34cb3e5fbc2"
+      "bytes": 105080,
+      "sha256": "c1e97c083b56587dff73b9eb54255b7150b5516bc3121f1ae946c262fbbb3347"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -78,8 +78,8 @@
       "sha256": "52de92913663dd828f91423172f739583d24e219fe40a348bbe447e0c6e77cb3"
     },
     "index.html": {
-      "bytes": 14744,
-      "sha256": "4a6ec1e4877f8c3deaa66dcd4087dbe42e5ea4396d7310eafecb00bdb297b9bd"
+      "bytes": 15759,
+      "sha256": "d15bbb411daf593bf05c0230758d4ab3ba08f63acf7d6bb7ab302b35dcea2a93"
     },
     "package.json": {
       "bytes": 325,
@@ -162,12 +162,12 @@
       "sha256": "f26e30267bd7dcf43f906a796dcef0478ec4f21edcb3f501c266520b5fe28a3d"
     },
     "shared/selection-state.mjs": {
-      "bytes": 6793,
-      "sha256": "7292727724bdb785a74445f1b204d0af8c85ad35a90f738cf7c2eebd2c61a0c7"
+      "bytes": 6893,
+      "sha256": "121cea145930c9efd4101ec19783bd53271291d50c052e34b890d81c70d4cef3"
     },
     "shared/shell-controller.mjs": {
-      "bytes": 4545,
-      "sha256": "42b0eaf912cdfd05ab9f099b51786d432dad4cefcf81b5bfa18ccddb76d92886"
+      "bytes": 4577,
+      "sha256": "46c98a3b186791c48b21cc2dba3706e61e359f8cbc48e66d8d3b04251a82f7f1"
     },
     "shared/startup-state.mjs": {
       "bytes": 1791,
@@ -178,12 +178,12 @@
       "sha256": "565da6cc68030e30561100f703d4709fc5a63f210b23c485c5d5866490869c29"
     },
     "shared/workbench.mjs": {
-      "bytes": 6969,
-      "sha256": "86b000c2c5deb81a43f03d9339c20314edbf4db12fc231ffafd20b17f62cdc2f"
+      "bytes": 8376,
+      "sha256": "b1f5696f95dc1fde208404cfc4abd2162cf6319ed07e481480e6649dbdf98411"
     },
     "style.css": {
-      "bytes": 46475,
-      "sha256": "fbf49a08808796c3a3d1898f21d839b5901ecfc15239d1ae245cf224a95f7b38"
+      "bytes": 48875,
+      "sha256": "4ad9e72335b764403f14081088a5444eb61747d95f50f93a87a69e9176cd0ebb"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,
@@ -204,6 +204,10 @@
     "tests/server-boundaries.test.py": {
       "bytes": 2999,
       "sha256": "dbc297d523fb3958790abf58a73f7983348c23133a0180315e2a7e9f13efc5a6"
+    },
+    "tests/workbench-actions.test.mjs": {
+      "bytes": 3180,
+      "sha256": "9f6dd0c380c5a34ad8ecf50cbc894334ffdda5efc6e7df521ccca564301a51aa"
     },
     "validate-workspace.mjs": {
       "bytes": 4451,
