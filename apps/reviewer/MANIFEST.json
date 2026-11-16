@@ -18,8 +18,8 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 107404,
-      "sha256": "bc195b17067620656b0bd0655fe534b737daa6807b18554ec462c5d337492a4a"
+      "bytes": 109161,
+      "sha256": "450745508965ac5736f0816aa3ed95bdcd80a1dcfd93716fba62ce1957b608c1"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -78,8 +78,8 @@
       "sha256": "52de92913663dd828f91423172f739583d24e219fe40a348bbe447e0c6e77cb3"
     },
     "index.html": {
-      "bytes": 16040,
-      "sha256": "d729912964c38296b8212bf30392bb8dfae67a502bcbe4ad7b0b7a436c09e4e0"
+      "bytes": 16647,
+      "sha256": "ae3f7cb2546b91a146152bbc1703bc5f3a70e3e51c68774f2aad1819703e254d"
     },
     "package.json": {
       "bytes": 325,
@@ -182,8 +182,8 @@
       "sha256": "90a09aed9a272d55a34d336977e7a15589bb273718e5d0e1688653c79d62c127"
     },
     "style.css": {
-      "bytes": 49891,
-      "sha256": "6de327feb2ff45cf91ea3424d01efe73111d2773c96ee0a3ed9a165cb361a2c1"
+      "bytes": 55971,
+      "sha256": "d61f86708a90977a89940d73a7e0e39f581e22002589b1f6001d93f0735f3f46"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,

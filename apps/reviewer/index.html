@@ -31,25 +31,35 @@
   <div class="catalogue-toolbar">
     <div class="filters">
       <label class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4 4"/></svg><input id="search" type="search" placeholder="搜索资产…" aria-label="搜索资产"><kbd>/</kbd></label>
-      <select id="category-filter" aria-label="筛选类别"><option value="all">类别</option></select>
       <select id="review-filter" aria-label="筛选审阅状态"><option value="all">审阅状态</option><option value="pending">未审</option><option value="keep">保留</option><option value="check">待查</option><option value="skip">不用</option></select>
-      <select id="preview-filter" aria-label="筛选预览"><option value="all">预览</option><option value="yes">有预览</option><option value="no">无预览</option></select>
-      <select id="animation-filter" hidden aria-label="筛选动画与特效恢复状态"><option value="all">动作与特效</option><option value="references">动画引用</option><option value="playable">可播放</option></select>
-      <div id="render-summary" class="render-summary"><select id="default-profile" aria-label="默认预览渲染方式" title="默认预览渲染方式"></select><button id="profiles-btn" class="text-btn icon-btn" title="渲染方式说明" aria-label="渲染方式说明">ⓘ</button></div>
+      <details id="more-filters" class="toolbar-menu toolbar-menu--filters" name="catalogue-controls">
+        <summary>更多筛选</summary>
+        <div class="toolbar-panel">
+          <select id="category-filter" aria-label="筛选类别"><option value="all">类别</option></select>
+          <select id="preview-filter" aria-label="筛选预览"><option value="all">预览</option><option value="yes">有预览</option><option value="no">无预览</option></select>
+          <select id="animation-filter" hidden aria-label="筛选动画与特效恢复状态"><option value="all">动作与特效</option><option value="references">动画引用</option><option value="playable">可播放</option></select>
+          <div id="facet-filters" class="facet-filters"></div>
+        </div>
+      </details>
       <button id="clear-filters" class="icon-btn" title="清除筛选" aria-label="清除筛选"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5v5h5"/><path d="M4.7 9.5a8 8 0 1 1-.1 5"/></svg></button>
+      <details id="view-settings" class="toolbar-menu toolbar-menu--view" name="catalogue-controls">
+        <summary>视图设置</summary>
+        <div class="toolbar-panel list-options">
+          <label>排序<select id="sort" aria-label="排序"><option value="featured">推荐</option><option value="name">名称</option><option value="triangles">面数</option><option value="type">类型</option></select></label>
+          <label class="page-size-control">每页<select id="page-size" aria-label="每页条数"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+          <div id="render-summary" class="render-summary"><label>渲染<select id="default-profile" aria-label="默认预览渲染方式"></select></label><button id="profiles-btn" class="text-btn icon-btn" title="渲染方式说明" aria-label="渲染方式说明">ⓘ</button></div>
+          <div class="background-control" role="group" aria-label="预览背景">
+            <span>背景</span>
+            <button class="swatch checker" data-bg="checker" title="棋盘" aria-label="棋盘背景"></button>
+            <button class="swatch light active" data-bg="light" title="浅色" aria-label="浅色背景"></button>
+            <button class="swatch dark" data-bg="dark" title="深色" aria-label="深色背景"></button>
+          </div>
+          <div class="layout-control" role="group" aria-label="显示布局"><button id="layout-grid" class="light-btn" aria-pressed="true">网格</button><button id="layout-list" class="light-btn" aria-pressed="false">列表</button></div>
+          <select id="dataset-select" aria-label="选择资源数据集" hidden></select>
+        </div>
+      </details>
     </div>
-    <div class="list-options">
-      <div class="background-control" role="group" aria-label="预览背景">
-        <button class="swatch checker" data-bg="checker" title="棋盘" aria-label="棋盘背景"></button>
-        <button class="swatch light active" data-bg="light" title="浅色" aria-label="浅色背景"></button>
-        <button class="swatch dark" data-bg="dark" title="深色" aria-label="深色背景"></button>
-      </div>
-      <div class="layout-control" role="group" aria-label="显示布局"><button id="layout-grid" class="light-btn" aria-pressed="true">网格</button><button id="layout-list" class="light-btn" aria-pressed="false">列表</button></div>
-      <select id="dataset-select" aria-label="选择资源数据集" hidden></select>
-      <select id="sort" aria-label="排序"><option value="featured">推荐</option><option value="name">名称</option><option value="triangles">面数</option><option value="type">类型</option></select>
-      <label class="page-size-control">每页<select id="page-size" aria-label="每页条数"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
-    </div>
-    <div id="facet-filters" class="facet-filters"></div>
+    <div id="active-filters" class="active-filters" role="group" aria-label="已生效的更多筛选" hidden></div>
     <p id="default-profile-note" class="notice error" role="alert" hidden></p>
   </div>
   <div class="tabs" id="tabs" role="tablist" aria-label="资产类型"></div>

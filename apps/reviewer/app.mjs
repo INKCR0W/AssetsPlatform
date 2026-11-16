@@ -699,18 +699,52 @@ function imageHTML(item, original = false, renderMode = false) {
 function cardHTML(item) {
   const status = reviewOf(item).status;
   const type = item.isObject ? categoryLabel(item.category) : typeLabels[item.type] || '其他';
-  const counts = state.layout === 'list' && item.isObject
+  const isList = state.layout === 'list';
+  const counts = isList && item.isObject
     ? ['mesh', 'material', 'texture'].map(type => [type, relatedCount(item, type)])
     : [];
-  const meta = state.layout === 'list'
-    ? `<div class="card-meta">${counts.filter(([, count]) => count).map(([type, count]) => `<span>${count} ${typeLabels[type]}</span>`).join('')}<span>${item.triangleCount == null ? '面数未提取' : fmt(item.triangleCount) + ' 面'}</span></div>`
+  const resources = counts.filter(([, count]) => count).map(([type, count]) => `${count} ${typeLabels[type]}`);
+  const meta = isList
+    ? `<div class="card-meta"><span>${esc(type)}</span><span>${item.triangleCount == null ? '面数未提取' : fmt(item.triangleCount) + ' 面'}</span>${resources.length ? `<span>${esc(resources.join(' / '))}</span>` : ''}</div>`
     : '';
   return `<article class="asset-card ${item.isObject ? 'object-card' : ''} ${selected.has(item.id) ? 'selected' : ''}" data-id="${esc(item.id)}">
     <input class="card-check" type="checkbox" aria-label="选择 ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''}>
     <span class="card-review ${status}">${REVIEW_STATUSES[status]}</span>
-    <button class="card-preview ${state.bg}" aria-label="查看 ${esc(item.name)}">${imageHTML(item, false, true)}<span class="card-type">${esc(type)}</span></button>
+    <button class="card-preview ${state.bg}" aria-label="查看 ${esc(item.name)}">${imageHTML(item, false, true)}${isList ? '' : `<span class="card-type">${esc(type)}</span>`}</button>
     <div class="card-body" role="button" tabindex="0" aria-label="查看 ${esc(item.name)} 详情"><h3 title="${esc(item.name)}">${esc(item.name)}</h3>${meta}</div>
   </article>`;
+}
+function renderActiveFilters() {
+  const host = $('#active-filters');
+  const controls = [
+    $('#category-filter'), $('#preview-filter'), $('#animation-filter'), ...$$('[data-facet]')
+  ];
+  const chips = [];
+  for (const control of controls) {
+    const option = control.selectedOptions?.[0];
+    if (control.hidden || !option?.value || option.value === 'all') continue;
+    const label = control.getAttribute('aria-label');
+    const name = option.textContent;
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'filter-chip';
+    chip.setAttribute('aria-label', `清除筛选：${label}，${name}`);
+    const remove = document.createElement('span');
+    remove.textContent = '×';
+    remove.setAttribute('aria-hidden', 'true');
+    chip.textContent = name;
+    chip.append(remove);
+    const index = chips.length;
+    chip.onclick = () => {
+      control.value = 'all';
+      control.dispatchEvent(new Event('change', {bubbles: true}));
+      const nextFocus = host.children[index] || host.lastElementChild || $('#more-filters summary');
+      nextFocus.focus({preventScroll: true});
+    };
+    chips.push(chip);
+  }
+  host.replaceChildren(...chips);
+  host.hidden = !chips.length;
 }
 function render() {
   document.body.dataset.mode = isObjectView() ? 'objects' : 'technical';
@@ -729,6 +763,7 @@ function render() {
   $('#result-description').textContent = '';
   renderPagination(page);
   if (config.capabilities.animationFilters) renderAnimationFilterCounts();
+  renderActiveFilters();
   $$('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === state.view));
   $$('#tabs .tab').forEach(button => {
     const active = button.dataset.type === state.type || button.dataset.category === state.category;
@@ -1588,6 +1623,10 @@ $('#sort').onchange = event => {
 };
 $('#clear-filters').onclick = resetFilters;
 $('#empty-reset').onclick = resetFilters;
+document.addEventListener('click', event => {
+  const menu = $('.toolbar-menu[open]');
+  if (menu && !event.composedPath().includes(menu)) menu.open = false;
+});
 $('#page-prev').onclick = () => goToPage(state.page - 1);
 $('#page-next').onclick = () => goToPage(state.page + 1);
 $('#page-jump').onkeydown = event => {
@@ -1774,6 +1813,13 @@ document.addEventListener('keydown', event => {
       case 'close': detail.close(); break;
       case 'selection': $('#detail-selected').click(); break;
     }
+    return;
+  }
+  const menu = $('.toolbar-menu[open]');
+  if (event.key === 'Escape' && menu) {
+    event.preventDefault();
+    menu.open = false;
+    menu.querySelector('summary').focus({preventScroll: true});
     return;
   }
   if (editing || active?.tagName === 'INPUT') return;
