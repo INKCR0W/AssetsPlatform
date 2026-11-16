@@ -139,6 +139,7 @@ function actionsFor(item) {
   return (actionLibrary.get(item?.id)?.actions || []).filter(a => a.status === 'ready');
 }
 function currentAction() {
+  if (!current || !matchesBaseModel(current, currentVariant)) return null;
   return actionsFor(current).find(a => a.id === activeActionId) || null;
 }
 function actionRole(a) {
@@ -311,6 +312,8 @@ function normalizeObject(record, basesById, basesBySourceId) {
     assemblyStatus: record.assemblyStatus || '源对象静态重组'
   };
 }
+const relatedFields = ['assetIds', 'resourceIds', 'meshIds', 'materialIds', 'textureIds', 'animationIds',
+  'prefabId', 'assetId', 'meshLinks', 'materialLinks', 'textureLinks', 'animationLinks', 'components', 'links', 'relations'];
 function allRelatedIds(object) {
   if (Array.isArray(object.assetIds)) {
     const ids = new Set(object.assetIds.filter(id => resourceMap.has(id)));
@@ -342,7 +345,7 @@ function allRelatedIds(object) {
       accept(value.textureLinks);
     }
   };
-  ['assetIds', 'resourceIds', 'meshIds', 'materialIds', 'textureIds', 'animationIds', 'prefabId', 'assetId', 'meshLinks', 'materialLinks', 'textureLinks', 'animationLinks', 'components', 'links', 'relations'].forEach(k => accept(object[k]));
+  relatedFields.forEach(key => accept(object[key]));
   if (object.sourceId && sourceMap.has(object.sourceId)) ids.add(sourceMap.get(object.sourceId).id);
   for (const id of [...ids]) {
     const resource = resourceMap.get(id);
@@ -854,10 +857,13 @@ function toggleSelection(id, on) {
   persist({selection: on ? {add: [id]} : {remove: [id]}});
   renderStats();
 }
+function renderMetrics(rows) {
+  return rows.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value ?? '未提取')}</strong></div>`).join('');
+}
 function metricHTML(item) {
   let rows;
   if (item.isObject) rows = [[diagnostics.has(item.id) ? '启用模型资源' : '模型资源', relatedCount(item, 'mesh') || item.meshCount || '未关联'], [diagnostics.has(item.id) ? '启用材质' : '关联材质', relatedCount(item, 'material')], [diagnostics.has(item.id) ? '身体贴图' : '关联贴图', relatedCount(item, 'texture')], ['原始节点', item.nodeCount ?? '见层级']];else if (item.type === 'texture') rows = [['尺寸', `${item.width ?? '未知'} × ${item.height ?? '未知'}`], ['格式', item.format || '未提取'], ['路径编号', item.provenance?.pathId], ['预览', previewLabel(item)]];else if (item.type === 'animation') rows = [['时长', item.duration === undefined ? '未提取' : item.duration + ' 秒'], ['采样率', item.sampleRate], ['循环', item.loop === undefined ? '未提取' : item.loop ? '是' : '否'], ['播放', '本页未实现']];else if (item.type === 'program') rows = [['程序集', item.assembly], ['文件大小', fmt(item.byteSize) + ' B'], ['来源', 'ILSpy重建'], ['执行', '未执行']];else if (item.type === 'material') rows = [['着色器', item.shaderName], ['关联贴图', item.textureCount], ['浮点参数', item.floatParameterCount], ['颜色参数', item.colorParameterCount]];else rows = [['顶点', fmt(item.vertexCount)], ['三角面', fmt(item.triangleCount)], ['材质', item.materialIds?.length ?? '未关联'], ['骨骼', item.boneCount ?? '未提取']];
-  return rows.map(([label, value]) => `<div><span>${esc(label)}</span><strong>${esc(value ?? '未提取')}</strong></div>`).join('');
+  return renderMetrics(rows);
 }
 function coverageText(item) {
   const c = item.sourceCoverage || {};
@@ -866,13 +872,130 @@ function coverageText(item) {
 function printable(value) {
   return value === null || value === undefined ? '未提取' : typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
-function provenanceHTML(item) {
+function provenanceHTML(item, {showGeometry = true} = {}) {
   const p = item.provenance || {},
     rows = [['资源包', p.sourceBundle], ['序列化文件', p.serializedFile], ['恢复性质', p.label], ['源文件', p.sourceFile], ['路径编号', p.pathId], ['稳定标识', item.sourceId || item.id], ['源归档', p.archive], ['原始名称', item.originalName], ['顶点 / 面', item.vertexCount !== undefined ? `${fmt(item.vertexCount)} / ${fmt(item.triangleCount)}` : null], ['数据通道', item.channels], ['源着色器', item.shaderName], ['使用位置', item.usagePaths], ['坐标转换', item.coordinateSystem || item.boundsCoordinateSystem], ['源对象 SHA256', p.sourceObjectSha256]];
-  return rows.filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(printable(value))}</dd>`).join('');
+  return rows.filter(([label, value]) => (showGeometry || label !== '顶点 / 面') &&
+    value !== null && value !== undefined && value !== '').map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(printable(value))}</dd>`).join('');
 }
 function downloadsHTML(item) {
   return [[item.metadataUrl, item.metadataUrl?.includes('#') ? '索引分片' : '元数据'], [item.modelAsset ? null : item.modelUrl, item.isObject ? '轨道 GLB' : '几何 GLB'], [item.ikMetadataUrl, '约束数据'], [animationRecords.get(item.id)?.variants?.constraint?.modelUrl, '约束 GLB'], [item.originalUrl, '原始图像'], [item.sourceCodeUrl, '反编译文本'], ...(item.downloads || []).filter(d => d.kind === 'url').map(d => [d.url, d.label])].filter(([url]) => url).map(([url, label]) => `<a class="light-btn" href="${esc(url)}" download>${esc(label)}</a>`).join('');
+}
+function matchesBaseModel(item, variant) {
+  if (!variant) return true;
+  if (variant.modelAsset) return variant.modelAsset === item.modelAsset &&
+    (!variant.modelUrl || variant.modelUrl === item.modelUrl);
+  return !!variant.modelUrl && variant.modelUrl === item.modelUrl;
+}
+function activeDetail(item, variant, animationRecord) {
+  const sameModel = matchesBaseModel(item, variant);
+  const entry = variant ? {
+    ...(sameModel ? item : {}),
+    ...variant,
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    isObject: item.isObject,
+    modelUrl: variant.modelUrl ?? (sameModel ? item.modelUrl : undefined),
+    modelAsset: variant.modelAsset ?? (sameModel ? item.modelAsset : undefined),
+    resourceBaseUrl: variant.resourceBaseUrl ?? item.resourceBaseUrl
+  } : item;
+  const declaredRelations = variant && [...relatedFields, 'relatedIds', 'sourceId'].some(key => Object.hasOwn(variant, key));
+  const links = declaredRelations ? [...new Set([
+    ...allRelatedIds(variant), ...(Array.isArray(variant.relatedIds) ? variant.relatedIds.filter(id => resourceMap.has(id)) : [])
+  ])] : sameModel ? item.relatedIds : undefined;
+  const modelUrl = animationRecord?.modelUrl || entry.modelUrl;
+  const usesAnimationModel = modelUrl !== entry.modelUrl;
+  return {
+    entry, links, modelUrl,
+    modelAsset: usesAnimationModel ? undefined : entry.modelAsset,
+    variantLabel: variant?.label || variant?.id,
+    usesAnimationModel, sameModel, useBaseDiagnostics: sameModel && !declaredRelations
+  };
+}
+function detailFileName(url) {
+  if (!url) return '';
+  const name = new URL(url, location.href).pathname.split('/').pop();
+  try { return decodeURIComponent(name); } catch { return name; }
+}
+function detailModelFormat(detail) {
+  const format = detail.modelAsset?.format || /\.(glb|gltf)$/i.exec(detailFileName(detail.modelUrl))?.[1];
+  return format?.toUpperCase() || (detail.modelUrl ? '模型文件' : '');
+}
+function detailResourceMetric(value, links, type) {
+  if (value != null) return fmt(value);
+  const count = links?.filter(id => resourceMap.get(id)?.type === type).length;
+  return count ? `登记 ${count} 项` : '未提取';
+}
+function detailMetricHTML(item, detail, stats) {
+  const {entry, links, usesAnimationModel} = detail;
+  if (!detail.modelUrl && !item.isObject && item.type !== 'mesh') return metricHTML(entry);
+  const declared = usesAnimationModel ? {} : entry;
+  return renderMetrics([
+    ['类别', item.isObject ? categoryLabel(item.category) : typeLabels[item.type] || '其他'],
+    ['格式', detailModelFormat(detail) || '资源索引'],
+    ['三角面', fmt(stats?.triangles ?? declared.triangleCount)],
+    ['顶点', fmt(stats?.vertices ?? declared.vertexCount)],
+    ['材质', detailResourceMetric(stats?.materials ?? declared.materialCount, links, 'material')],
+    ['贴图', detailResourceMetric(stats?.textures ?? declared.textureCount, links, 'texture')]
+  ]);
+}
+function detailRelationsHTML(item, detail) {
+  if (detail.useBaseDiagnostics && diagnostics.has(item.id)) return relationsHTML(item);
+  const groups = ['mesh', 'material', 'texture', 'animation', 'prefab'];
+  const links = {...detail.entry, relatedIds:detail.links};
+  const present = groups.map(type => [type, relatedResources(links, type)]).filter(([, resources]) => resources.length);
+  const empty = groups.filter(type => !present.some(([kind]) => type === kind));
+  const model = detail.modelUrl && empty.includes('mesh')
+    ? `<p class="detail-component-file"><strong>模型文件</strong> ${esc(detailFileName(detail.modelUrl) || detail.variantLabel || item.name)}</p>`
+    : '';
+  const missing = empty.filter(type => type !== 'mesh' || !model)
+    .map(type => type === 'animation' ? '动作' : typeLabels[type] || 'Prefab');
+  return `${detail.useBaseDiagnostics ? sourceObjectLinksHTML(item) : ''}<h3>组成</h3>${model}` +
+    present.map(([type, resources]) => relationGroupHTML(type, resources)).join('') +
+    (missing.length ? `<p class="relation-empty">未登记组成引用：${esc(missing.join('、'))}</p>` : '');
+}
+function renderDetailAsset(item, detail) {
+  const {entry, modelUrl, modelAsset, variantLabel} = detail;
+  const isGLB = detailModelFormat(detail) === 'GLB';
+  const hasImage = Boolean(entry.originalUrl || entry.previewUrl);
+  $('#detail-current-model').textContent = modelUrl
+    ? `当前预览：${variantLabel || (detail.usesAnimationModel ? '动作模型' : '默认模型')}`
+    : hasImage ? '图像预览' : '该条目未提供可预览文件';
+  $('#detail-metrics').innerHTML = detailMetricHTML(item, detail);
+  $('#detail-provenance').innerHTML = provenanceHTML(item, {showGeometry:false});
+  const filename = detailFileName(modelUrl);
+  const file = $('#detail-download-file');
+  file.textContent = filename;
+  file.hidden = !filename;
+  const metadata = entry.metadataUrl || item.metadataUrl;
+  const constraint = detail.sameModel ? animationRecords.get(item.id)?.variants?.constraint?.modelUrl : null;
+  const links = [
+    [modelAsset ? null : modelUrl, isGLB ? '下载当前 GLB' : '下载当前模型', 'primary-btn'],
+    [metadata, metadata?.includes('#') ? '索引分片' : '下载元数据', modelUrl ? 'light-btn' : 'primary-btn'],
+    [entry.ikMetadataUrl, '约束数据'],
+    [constraint !== modelUrl ? constraint : null, '约束 GLB'],
+    [entry.originalUrl, '原始图像'],
+    [entry.sourceCodeUrl, '反编译文本'],
+    ...(Array.isArray(entry.downloads) ? entry.downloads.filter(link => link?.kind === 'url').map(link => [link.url, link.label]) : [])
+  ];
+  const container = $('#detail-downloads');
+  const available = links.filter(([url]) => url);
+  container.replaceChildren();
+  container.innerHTML = available.map(([url,label,kind='light-btn']) => `<a class="${kind}" href="${esc(url)}" download>${esc(label)}</a>`).join('');
+  bindResourceDownloads({...entry, modelUrl, modelAsset}, container);
+  partnerSelections?.decorateDownloads(item, container);
+  $('#detail-download-message').textContent = !modelUrl && !hasImage
+    ? available.length ? '当前条目提供索引或其他附件。' : '目录未提供可下载文件。'
+    : '';
+  const relationHost = $('#object-relations');
+  relationHost.innerHTML = detailRelationsHTML(item, detail);
+  relationHost.hidden = false;
+  $$('#object-relations [data-related]').forEach(button => button.onclick = () => openResource(resourceMap.get(button.dataset.related)));
+  $$('#object-relations [data-object-related]').forEach(button => button.onclick = () => {
+    const related = itemMap.get(button.dataset.objectRelated);
+    if (related?.isObject) openDetail(related);
+  });
 }
 function relationGroupHTML(type, linked, label = type === 'animation' ? '动作' : typeLabels[type] || '其他', empty = '无关联') {
   return `<details class="relation-group" ${linked.length && ['material', 'texture'].includes(type) ? 'open' : ''}><summary>${esc(label)}<span>${linked.length} 项</span></summary>${linked.length ? `<div class="relation-list">${linked.map(resource => `<button data-related="${esc(resource.id)}" title="${esc(resource.name)}">${esc(resource.name)}${type === 'animation' ? '<small>未转换</small>' : ''}</button>`).join('')}</div>${type === 'texture' ? `<div class="relation-thumbnails">${linked.filter(a => a.previewUrl).slice(0, 12).map(resource => `<button data-related="${esc(resource.id)}" aria-label="查看贴图 ${esc(resource.name)}"><img src="${esc(resource.previewUrl)}" alt="${esc(resource.name)}"></button>`).join('')}</div>` : ''}` : `<div class="relation-empty">${esc(empty)}</div>`}</details>`;
@@ -985,18 +1108,22 @@ function updateAnimationControls(state) {
   if ($('#animation-clip-limitations-text').textContent !== clipEvidence) $('#animation-clip-limitations-text').textContent = clipEvidence;
   $('#animation-clip-limitations').hidden = !clipEvidence;
 }
-function showAnimationAvailability(item, record) {
-  $('#animation-library-wrap').hidden = !actionsFor(item).length;
+function showAnimationAvailability(item, record, detail) {
+  $('#animation-library-wrap').hidden = !detail.sameModel || !actionsFor(item).length;
   const base = animationRecords.get(item.id),
-    hasConstraint = verifiedAnimationRecord(base?.variants?.constraint);
+    hasConstraint = detail.sameModel && verifiedAnimationRecord(base?.variants?.constraint);
   $('#animation-mode-wrap').hidden = !hasConstraint;
   $('#animation-mode').value = hasConstraint ? animationMode : 'source';
   $('#animation-heading-label').textContent = record ? '动作' : '动作引用';
-  const hasReferences = item.isObject && relatedResources(item, 'animation').length > 0;
+  const hasReferences = item.isObject && detail.links?.some(id => resourceMap.get(id)?.type === 'animation');
   $('#animation-panel').hidden = !hasReferences && !record;
   $('#animation-controls').hidden = true;
   $('#animation-status').textContent = record ? '载入中…' : hasReferences ? '尚未转换' : '';
   $('#animation-source').hidden = true;
+  const evidence = $('#animation-evidence-link');
+  evidence.hidden = true;
+  evidence.removeAttribute('href');
+  $('#preview-playback-note').textContent = '';
   $('#animation-loop').textContent = '';
   $('#animation-limitations').hidden = true;
   $('#animation-limitations').innerHTML = '';
@@ -1109,34 +1236,36 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
   playback.configure([]);
   const item = current;
   if (!item) return;
-  const rendered = currentVariant ? {
-    ...item,
-    ...currentVariant
-  } : item;
+  const candidateRecord = item.isObject && matchesBaseModel(item, currentVariant) ? selectedAnimationRecord(item) : null;
+  const animationRecord = candidateRecord && canPlayAnimation(item) ? candidateRecord : null;
+  const detail = activeDetail(item, currentVariant, animationRecord);
+  const {entry, modelUrl, modelAsset} = detail;
+  renderDetailAsset(item, detail);
   viewerLoading = true;
   $('#toggle-render-compare').disabled = true;
-  const candidateRecord = item.isObject ? selectedAnimationRecord(item) : null;
-  const animationRecord = canPlayAnimation(item) ? candidateRecord : null;
-  showAnimationAvailability(item, animationRecord);
+  showAnimationAvailability(item, animationRecord, detail);
   const stageA = $('#preview-stage'),
     stageB = $('#preview-stage-b');
   stageA.className = 'preview-stage ' + state.bg;
   stageB.className = 'preview-stage ' + state.bg;
-  stageA.innerHTML = imageHTML(item, true);
-  stageB.innerHTML = imageHTML(item, true);
-  $('#compare-pane').hidden = !comparison;
-  $('#render-viewports').classList.toggle('comparing', comparison);
+  stageA.innerHTML = imageHTML(entry, true);
+  stageB.innerHTML = imageHTML(entry, true);
+  const metadataOnly = !modelUrl && !entry.originalUrl && !entry.previewUrl;
+  $('#detail-preview-empty').hidden = !metadataOnly;
+  $('#render-viewports').hidden = metadataOnly;
+  $('#compare-pane').hidden = !comparison || !modelUrl;
+  $('#render-viewports').classList.toggle('comparing', comparison && !!modelUrl);
   $('#toggle-render-compare').textContent = comparison ? '结束对比' : '渲染对比';
-  $('#toggle-render-compare').hidden = false;
+  $('#toggle-render-compare').hidden = !modelUrl;
   $('#toggle-render-compare').title = config.renderer.compare === false ? '当前格式暂不支持双视图' : '对比两种渲染方式';
-  $('#profile-a').disabled = !rendered.modelUrl;
-  $('#profile-b').disabled = !rendered.modelUrl;
-  $('#wireframe-btn').hidden = !rendered.modelUrl;
-  $('#reset-camera').hidden = !rendered.modelUrl;
+  $('#profile-a').disabled = !modelUrl;
+  $('#profile-b').disabled = !modelUrl;
+  $('#wireframe-btn').hidden = !modelUrl;
+  $('#reset-camera').hidden = !modelUrl;
   $('#wireframe-btn').classList.remove('active');
   updateProfileNotes();
-  if (!rendered.modelUrl) {
-    $('#preview-caption').textContent = previewLabel(item);
+  if (!modelUrl) {
+    $('#preview-caption').textContent = metadataOnly ? '' : previewLabel(entry);
     viewerLoading = false;
     $('#toggle-render-compare').disabled = config.renderer.compare === false;
     return;
@@ -1155,11 +1284,10 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
     if (request !== viewerRequest) return;
   }
   try {
-    const modelUrl = animationRecord?.modelUrl || rendered.modelUrl;
     const a = await createViewer(stageA, modelUrl, {
       profile: viewerProfile(profileById(profileA)),
-      modelAsset: rendered.modelAsset,
-      resourceBaseUrl: rendered.resourceBaseUrl,
+      modelAsset,
+      resourceBaseUrl: entry.resourceBaseUrl,
       materialRules,
       signal: abort.signal,
       camera: previousCamera,
@@ -1171,11 +1299,12 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
       return;
     }
     viewerA = a;
+    if (a.stats) $('#detail-metrics').innerHTML = detailMetricHTML(item, detail, a.stats);
     if (comparison) {
       const b = await createViewer(stageB, modelUrl, {
         profile: viewerProfile(profileById(profileB)),
-        modelAsset: rendered.modelAsset,
-        resourceBaseUrl: rendered.resourceBaseUrl,
+        modelAsset,
+        resourceBaseUrl: entry.resourceBaseUrl,
         materialRules,
         signal: abort.signal,
         camera: a.getCamera?.(),
@@ -1188,7 +1317,7 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
       }
       viewerB = b;
     }
-    bindAnimationControls(item, animationRecord, preserved, animationData);
+    if (detail.sameModel) bindAnimationControls(item, animationRecord, preserved, animationData);
     $('#preview-caption').textContent = '';
     const playbackNote = $('#preview-playback-note');
     playbackNote.textContent = animationClips.length ? '播放器使用已验证的源轨道或离线约束结果。播放范围可覆盖源片段的完整时域。纯事件片段无骨骼运动。原始轨道缺少逆向运动学约束。物理、音效、事件和完整动画控制器未重现。' : '';
@@ -1207,8 +1336,8 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
     const failure = describePreviewFailure(error);
     $('#preview-caption').textContent = failure.title;
     $('#preview-disclaimer').textContent = failure.guidance + ' ' + $('#preview-disclaimer').textContent;
-    stageA.innerHTML = item.originalUrl || item.previewUrl ? imageHTML(item, true) : '';
-    stageB.innerHTML = item.originalUrl || item.previewUrl ? imageHTML(item, true) : '';
+    stageA.innerHTML = entry.originalUrl || entry.previewUrl ? imageHTML(entry, true) : '';
+    stageB.innerHTML = entry.originalUrl || entry.previewUrl ? imageHTML(entry, true) : '';
     showPreviewFailure(stageA, failure);
     if (comparison) showPreviewFailure(stageB, failure);
     $('#wireframe-btn').hidden = true;
@@ -1225,10 +1354,10 @@ async function openDetail(item) {
   previewQueue?.cancel();
   if (current) saveComment();
   current = item;
-  currentVariant = (item.variants || []).find(v => item.modelAsset ? v.modelAsset === item.modelAsset : v.modelUrl === item.modelUrl) || (item.variants || [])[0] || null;
+  currentVariant = (item.variants || []).find(variant => matchesBaseModel(item, variant)) || (item.variants || [])[0] || null;
   const variants = $('#resource-variant');
   variants.hidden = !(item.variants || []).length;
-  variants.innerHTML = (item.variants || []).map(v => `<option value="${esc(v.id)}">${esc(v.label)}</option>`).join('');
+  variants.innerHTML = (item.variants || []).map(v => `<option value="${esc(v.id)}">${esc(v.label || v.id)}</option>`).join('');
   variants.value = currentVariant?.id || '';
   const library = actionLibrary.get(item.id),
     ready = actionsFor(item);
@@ -1247,17 +1376,6 @@ async function openDetail(item) {
   updateDetailNavigation(filterItems());
   $('#detail-tags').innerHTML = `<span id="detail-review" class="card-review"></span><span>${esc(item.isObject ? categoryLabel(item.category) : typeLabels[item.type] || '其他')}</span>`;
   $('#detail-selected').checked = selected.has(item.id);
-  $('#detail-metrics').innerHTML = metricHTML(item);
-  $('#detail-provenance').innerHTML = provenanceHTML(item);
-  $('#detail-downloads').innerHTML = downloadsHTML(item);
-  partnerSelections?.decorateDownloads(item, $('#detail-downloads'));
-  $('#object-relations').innerHTML = relationsHTML(item);
-  $('#object-relations').hidden = !item.isObject;
-  $$('[data-related]').forEach(button => button.onclick = () => openResource(resourceMap.get(button.dataset.related)));
-  $$('[data-object-related]').forEach(button => button.onclick = () => {
-    const related = itemMap.get(button.dataset.objectRelated);
-    if (related?.isObject) openDetail(related);
-  });
   $('#comment').value = reviewOf(item).comment || '';
   commentBaseline = $('#comment').value;
   commentDirty = false;
@@ -1288,12 +1406,11 @@ async function openDetail(item) {
   $('.detail-info').scrollTop = 0;
   loadObjectHierarchy(item);
   loadItemEvidence(item);
-  bindResourceDownloads(item, $('#detail-downloads'));
   await startViewers();
 }
 async function openResource(resource) {
   if (!resource) return;
-  if (resource.modelUrl) {
+  if (resource.modelUrl || resource.variants?.some(variant => variant.modelUrl)) {
     await openDetail(resource);
     return;
   }

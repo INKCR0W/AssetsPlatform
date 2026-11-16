@@ -966,7 +966,7 @@ export async function createViewer(container,url,options={}) {
         if(!alive())reject(cancelledError());else if(blob)resolve(blob);else reject(Error('预览图像生成失败'));
       },'image/png'));
     },
-    get warnings(){return geometry?.warnings?.slice()||[];},get stats(){return geometry?{triangles:geometry.triangles,vertices:geometry.vertices,materials:geometry.materials.length}:null;}};
+    get warnings(){return geometry?.warnings?.slice()||[];},get stats(){return geometry?{triangles:geometry.triangles,vertices:geometry.vertices,materials:geometry.materials.length,textures:geometry.textures.length}:null;}};
   activeViewers.set(container,api);
   if(options.signal){if(options.signal.aborted){dispose();return api;}listen(options.signal,'abort',dispose,{once:true});}
   if(!gl){dispose();showStatus('此浏览器无法使用 WebGL，请查看静态预览',true);throw Error('此浏览器无法使用 WebGL');}

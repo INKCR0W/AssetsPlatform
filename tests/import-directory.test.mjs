@@ -137,6 +137,41 @@ test('portable validator catches a missing arbitrary model, without cube assumpt
  const x=setup();try{fs.writeFileSync(path.join(x.source,'arbitrary.glb'),cube);importDirectory(x);const catalog=JSON.parse(fs.readFileSync(path.join(x.output,'library/assets/catalog.json')));fs.unlinkSync(path.join(x.output,'library',catalog.assets[0].modelUrl));const result=spawnSync(process.execPath,['validate-workspace.mjs'],{cwd:x.output,encoding:'utf8'});assert.notEqual(result.status,0);assert.match(result.stderr,/validation failed/);}finally{clean(x);}
 });
 
+test('portable validator checks GLB files declared only by object and resource variants',()=>{
+ const x=setup();
+ try {
+  fs.writeFileSync(path.join(x.source,'cube.glb'),cube);
+  importDirectory(x);
+  const assetRoot=path.join(x.output,'library/assets');
+  for(const [catalogName,field,filename] of [
+   ['catalog.json','assets','resource-light.glb'],
+   ['objects-catalog.json','objects','object-light.glb'],
+  ]){
+   const catalogPath=path.join(assetRoot,catalogName);
+   const catalog=JSON.parse(fs.readFileSync(catalogPath));
+   const item=catalog[field][0];
+   item.variants=[
+    {id:'standard',label:'Standard',modelUrl:item.modelUrl},
+    {id:'light',label:'Light',modelUrl:'assets/'+filename},
+   ];
+   fs.writeFileSync(catalogPath,JSON.stringify(catalog));
+   fs.writeFileSync(path.join(assetRoot,filename),cube);
+  }
+  const validate=()=>spawnSync(process.execPath,['validate-workspace.mjs'],{cwd:x.output,encoding:'utf8'});
+  const passed=validate();
+  assert.equal(passed.status,0,passed.stderr);
+  const models=JSON.parse(passed.stdout).projects[0].models;
+  assert.equal(models.length,3);
+  assert(models.some(model=>model.path.endsWith('/object-light.glb')));
+  assert(models.some(model=>model.path.endsWith('/resource-light.glb')));
+
+  fs.unlinkSync(path.join(assetRoot,'object-light.glb'));
+  const missing=validate();
+  assert.notEqual(missing.status,0);
+  assert.match(missing.stderr,/validation failed: .*object-light\.glb/);
+ } finally {clean(x);}
+});
+
 test('snapshot backup round-trip works, and changed bytes cannot silently inherit selection or review',()=>{
  const x=setup();try {
   const file=path.join(x.source,'same-path.glb');fs.writeFileSync(file,cube);importDirectory(x);

@@ -61,6 +61,7 @@ class Element {
   }
   querySelectorAll() { return []; }
   setAttribute() {}
+  removeAttribute(name) { delete this[name]; }
   addEventListener(name, run) {
     if (!this.events.has(name)) this.events.set(name, []);
     this.events.get(name).push(run);
@@ -81,7 +82,8 @@ class Element {
 let fixtureId = 0;
 async function boot(t, mode, {
   shared = false, sharedSession, sharedList, responses = {}, storageError, initialSelection,
-  catalogAssets = [], catalogObjects = [asset], createViewer, downloadResource, storageValues
+  catalogAssets = [], catalogObjects = [asset], createViewer, downloadResource, storageValues,
+  animationIndex, actionIndex
 } = {}) {
   const root = reviewer[mode];
   const appRoot = mode === 'hosted' ? new URL('shared/', root) : root;
@@ -91,13 +93,14 @@ async function boot(t, mode, {
   const config = {
     ...structuredClone(descriptor.config), assetRoot: url, origin: new URL(url).origin,
     projectId: 'entity', datasetId: 'verified', renderer: descriptor.renderer, dataKind: 'entity',
-    sharedSelections: shared, siteId: 'fixture'
+    sharedSelections: shared, siteId: 'fixture', verifiedAnimation: Boolean(animationIndex)
   };
   const catalogue = deferred();
   const data = {
     kind: 'entity',
     catalog: { assets: catalogAssets },
     objectCatalog: { objects: catalogObjects },
+    animationIndex, actionIndex,
     datasets: {
       verified: { id: 'verified', label: 'Verified', resources: [] },
       adapter: { id: 'adapter', label: 'Alternate', resources: [libraryAsset] }
@@ -649,6 +652,158 @@ test('hosted variant preview and verified download share the active declaration 
   assert.equal(h.toast(), toast);
   assert.equal(button().textContent, '下载已校验的 Preview_C.glb');
   assert.equal(button().disabled, false);
+});
+
+test('public detail keeps preview, specs, composition and download tied to the active variant', async t => {
+  const baseModel = 'standard.glb';
+  const lightModel = 'light.glb';
+  const object = {
+    ...asset, modelUrl: baseModel, triangleCount: 222, vertexCount: 666, assetIds: ['base-mesh', 'base-texture'],
+    variants: [
+      { id: 'standard', label: 'Standard', modelUrl: baseModel },
+      { id: 'light', label: 'Light', modelUrl: lightModel, triangleCount: 44, assetIds: ['light-mesh'] }
+    ]
+  };
+  const previews = [];
+  const standardPreview = deferred();
+  const lightPreview = deferred();
+  const h = await boot(t, 'public', {
+    catalogObjects: [object],
+    catalogAssets: [
+      { id: 'base-mesh', name: 'Standard mesh', type: 'mesh' },
+      { id: 'base-texture', name: 'Standard texture', type: 'texture' },
+      { id: 'light-mesh', name: 'Light mesh', type: 'mesh' }
+    ],
+    createViewer: (stage, url) => {
+      previews.push(url);
+      return url === baseModel ? standardPreview.promise : lightPreview.promise;
+    }
+  });
+  await h.ready();
+  const opening = h.app.openDetail(h.app.itemMap.get(object.id));
+  await new Promise(setImmediate);
+  const metrics = () => h.get('#detail-metrics').innerHTML;
+  const relations = () => h.get('#object-relations').innerHTML;
+  const downloads = () => h.get('#detail-downloads').innerHTML;
+
+  assert.deepEqual(previews, [baseModel]);
+  assert.match(metrics(), /222/);
+  assert.match(metrics(), /666/);
+  assert.match(relations(), /Standard mesh/);
+  assert.match(relations(), /Standard texture/);
+  assert.match(downloads(), /href="standard\.glb"/);
+  assert.doesNotMatch(downloads(), /href="light\.glb"/);
+
+  h.get('#resource-variant').onchange({ target: { value: 'light' } });
+  await new Promise(setImmediate);
+  assert.deepEqual(previews, [baseModel, lightModel]);
+  assert.match(metrics(), /44/);
+  assert.doesNotMatch(metrics(), /222|666/);
+  assert.match(metrics(), /未提取/);
+  assert.match(relations(), /Light mesh/);
+  assert.doesNotMatch(relations(), /Standard mesh|Standard texture/);
+  assert.match(downloads(), /href="light\.glb"/);
+  assert.doesNotMatch(downloads(), /href="standard\.glb"/);
+
+  lightPreview.resolve({ stats: { triangles: 45, vertices: 135, materials: 1, textures: 0 }, dispose() {} });
+  await new Promise(setImmediate);
+  assert.match(metrics(), /45/);
+  assert.match(metrics(), /135/);
+
+  let staleViewerDisposed = false;
+  standardPreview.resolve({
+    stats: { triangles: 999, vertices: 888 },
+    dispose() { staleViewerDisposed = true; }
+  });
+  await opening;
+  assert.equal(staleViewerDisposed, true);
+  assert.match(metrics(), /45/);
+  assert.doesNotMatch(metrics(), /999|888/);
+  assert.match(relations(), /Light mesh/);
+  assert.match(downloads(), /href="light\.glb"/);
+});
+
+test('public metadata-only detail offers its record and a complete GLB can still open afterward', async t => {
+  const metadata = { ...asset, metadataUrl: '/review/record.json' };
+  const complete = { ...asset, id: 'complete', modelUrl: 'complete.glb' };
+  const previews = [];
+  const h = await boot(t, 'public', {
+    catalogObjects: [metadata, complete],
+    responses: { '/review/record.json': () => ({ id: metadata.id }) },
+    createViewer: async (stage, url) => {
+      previews.push(url);
+      return { dispose() {} };
+    }
+  });
+  await h.ready();
+  await h.app.openDetail(h.app.itemMap.get(metadata.id));
+  assert.deepEqual(previews, []);
+  assert.equal(h.get('#detail-preview-empty').hidden, false);
+  assert.match(h.get('#detail-downloads').innerHTML, /href="\/review\/record\.json"/);
+  assert.doesNotMatch(h.get('#detail-downloads').innerHTML, /\.glb/i);
+
+  await h.app.openDetail(h.app.itemMap.get(complete.id));
+  assert.deepEqual(previews, [complete.modelUrl]);
+  assert.equal(h.get('#detail-preview-empty').hidden, true);
+  assert.equal(h.get('#resource-variant').hidden, true);
+  assert.match(h.get('#detail-downloads').innerHTML, /href="complete\.glb"/);
+  assert.doesNotMatch(h.get('#detail-downloads').innerHTML, /record\.json/);
+});
+
+test('public detail clears animation evidence when switching to a different model version', async t => {
+  const sourceId = 'animated-source';
+  const baseModel = 'animated.glb';
+  const alternateModel = 'static.glb';
+  const dataUrl = '/review/motion.json';
+  const evidenceUrl = '/review/motion-evidence.json';
+  const action = { id: 'idle', clipId: 'idle', status: 'ready', recommended: true, evidenceUrl, conditions: 'Idle conditions' };
+  const animation = {
+    objectId: asset.id, sourceId, modelUrl: baseModel, dataUrl,
+    status: 'ready', skinBindingVerified: true, sourceCurvesVerified: true, pixelVerified: true,
+    playableClipIds: [action.clipId], verifiedPlayableClipIds: [action.clipId]
+  };
+  const alternate = deferred();
+  const h = await boot(t, 'public', {
+    catalogObjects: [{
+      ...asset, sourceId, modelUrl: baseModel,
+      variants: [
+        { id: 'animated', modelUrl: baseModel },
+        { id: 'static', modelUrl: alternateModel }
+      ]
+    }],
+    animationIndex: { objects: [animation] },
+    actionIndex: { objects: [{ objectId: asset.id, actions: [action] }] },
+    responses: { ['https://fixture.invalid' + dataUrl]: () => ({}) },
+    createViewer: async (stage, url) => url === alternateModel ? alternate.promise : {
+      getAnimationClips: () => [{ id: 'idle', duration: 1 }], dispose() {}
+    }
+  });
+  await h.ready();
+  await h.app.openDetail(h.app.itemMap.get(asset.id));
+  const evidence = h.get('#animation-evidence-link');
+  const summary = h.get('#animation-current-summary');
+  const playbackNote = h.get('#preview-playback-note');
+  assert.equal(evidence.hidden, false);
+  assert.equal(evidence.href, evidenceUrl);
+  assert.match(summary.textContent, /Idle conditions/);
+  assert.notEqual(playbackNote.textContent, '');
+
+  const switchTo = value => h.get('#resource-variant').onchange({ target: { value } });
+  switchTo('static');
+  assert.equal(evidence.hidden, true);
+  assert.equal(evidence.href, undefined);
+  assert.equal(summary.textContent, '');
+  assert.equal(playbackNote.textContent, '');
+  alternate.resolve({ dispose() {} });
+  await new Promise(setImmediate);
+  assert.equal(evidence.hidden, true);
+  assert.equal(summary.textContent, '');
+
+  switchTo('animated');
+  await new Promise(setImmediate);
+  assert.equal(evidence.hidden, false);
+  assert.equal(evidence.href, evidenceUrl);
+  assert.match(summary.textContent, /Idle conditions/);
 });
 
 test('public detail shows only the active model warnings across compare and view changes', async t => {

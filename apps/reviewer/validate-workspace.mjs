@@ -50,7 +50,11 @@ try {
   const project=await loadProject({fetchJSON:url=>fetchJSON(url,true,budget),location:{href:base,search:'?project='+encodeURIComponent(entry.id)}});
   const data=await loadProjectData(project,fetchJSON), objects=data.objectCatalog.objects ?? data.objectCatalog.assets, items=[...data.catalog.assets,...objects];
   if(!objects.length)throw Error('物件目录暂不可用');
-  const modelURLs=new Set(items.flatMap(item=>[item.modelUrl,item.assemblyModelUrl,item.materialModelUrl].filter(Boolean)).map(url=>project.config.resourceResolver.resolve(url)));
+  const modelsByItem=items.flatMap(item=>{
+   const variants=Array.isArray(item.variants)?item.variants:[];
+   return [item.modelUrl,item.assemblyModelUrl,item.materialModelUrl,...variants.map(variant=>variant?.modelUrl)];
+  });
+  const modelURLs=new Set(modelsByItem.filter(Boolean).map(url=>project.config.resourceResolver.resolve(url)));
   const models=[];
   for(const url of modelURLs){const g=parseGLB(read(url,PREVIEW_LIMITS.downloadBytes));models.push({path:new URL(url).pathname,vertexCount:g.vertices,triangleCount:g.triangles,warnings:g.warnings});}
   results.push({projectId:entry.id,datasetId:project.config.datasetId,resources:data.catalog.assets.length,objects:objects.length,models});

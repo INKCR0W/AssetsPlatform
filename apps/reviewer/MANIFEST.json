@@ -18,8 +18,8 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 109161,
-      "sha256": "450745508965ac5736f0816aa3ed95bdcd80a1dcfd93716fba62ce1957b608c1"
+      "bytes": 115912,
+      "sha256": "be64b0e733ddba260f052bffe21f5a0f5b472570fc0d0046f5ca9a6cc625480a"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -78,8 +78,8 @@
       "sha256": "52de92913663dd828f91423172f739583d24e219fe40a348bbe447e0c6e77cb3"
     },
     "index.html": {
-      "bytes": 16647,
-      "sha256": "ae3f7cb2546b91a146152bbc1703bc5f3a70e3e51c68774f2aad1819703e254d"
+      "bytes": 17632,
+      "sha256": "5573f31dc5b24111565f6bcc719a207aed6aa0ba38d6f014b072e5dbfa832198"
     },
     "package.json": {
       "bytes": 325,
@@ -182,8 +182,8 @@
       "sha256": "90a09aed9a272d55a34d336977e7a15589bb273718e5d0e1688653c79d62c127"
     },
     "style.css": {
-      "bytes": 55971,
-      "sha256": "d61f86708a90977a89940d73a7e0e39f581e22002589b1f6001d93f0735f3f46"
+      "bytes": 60063,
+      "sha256": "16afa83d85bba5954c6a86100578e3414e9bc3650b8d038afbd92387d9aba6f3"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,
@@ -210,16 +210,16 @@
       "sha256": "09b5e9a3bd8266cb2369590a30d0109d2d4b11558680c26b29240f3bdeaee686"
     },
     "validate-workspace.mjs": {
-      "bytes": 4451,
-      "sha256": "b552af5e4f5be39b278f35526a04c45de7a37dbe0ecdbe2aa7a1448143840ef8"
+      "bytes": 4612,
+      "sha256": "e70746ca747609bc4bf279fb97ed3f0eba03b6fb454670f148f5a83480386113"
     },
     "verify.mjs": {
       "bytes": 2158,
       "sha256": "0808abbe10a5fc3d8ed0031c809a4632579aebf25500b4662eaa2ac55212970d"
     },
     "viewer.mjs": {
-      "bytes": 86052,
-      "sha256": "d2cdc94da1ddf3b6a7a2bf97a156f3e2c855c5ebe381b199c45093b1cd9d409b"
+      "bytes": 86086,
+      "sha256": "615a3bc23988e65153694a0530dbf61c19fcf803bb08711c0ba087cc7aa6b982"
     }
   }
 }
