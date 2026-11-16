@@ -508,6 +508,22 @@ for (const mode of Object.keys(reviewer)) {
   });
 }
 
+test('public review buttons honor automatic advance and preserve the saved review', async t => {
+  const second = { id: 'two', name: 'Second object', category: 'demo' };
+  const h = await boot(t, 'public', { catalogObjects: [asset, second] });
+  await h.ready();
+  await h.app.openDetail(h.app.itemMap.get(asset.id));
+  h.get('#review-auto-advance').checked = false;
+  h.buttons[0].onclick();
+  assert.equal(h.get('#detail-title').textContent, asset.name);
+  assert.equal(h.stored().reviews[asset.id].status, 'keep');
+
+  h.get('#review-auto-advance').checked = true;
+  h.buttons[1].onclick();
+  assert.equal(h.stored().reviews[asset.id].status, 'check');
+  assert.equal(h.get('#detail-title').textContent, second.name);
+});
+
 test('hosted technical resource modal loads material metadata and preserves download links', async t => {
   const metadataUrl = 'https://fixture.invalid/review/material.json';
   const material = {
@@ -1090,6 +1106,7 @@ for (const mode of Object.keys(reviewer)) {
   test(`${mode} rebases stale editor fields and selections without resaving untouched text`, async t => {
     const h = await boot(t, mode, { catalogObjects: [asset, {id: 'two', name: 'Second'}] });
     await h.ready();
+    if (mode === 'public') h.get('#review-auto-advance').checked = false;
     await h.app.openDetail(h.app.itemMap.get(asset.id));
     const otherTab = h.stored();
     otherTab.reviews[asset.id] = {status: 'keep', comment: 'Other tab comment'};

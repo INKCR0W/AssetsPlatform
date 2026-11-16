@@ -1667,7 +1667,7 @@ $('#review-auto-advance').onchange = event => {
     showToast('未能保存');
   }
 };
-$$('.review-buttons button').forEach(button => button.onclick = () => markReview(button.dataset.status));
+$$('.review-buttons button').forEach(button => button.onclick = () => markReview(button.dataset.status, true));
 
 function markReview(status, advance = false) {
   if (!current) return;
