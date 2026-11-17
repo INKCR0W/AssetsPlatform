@@ -6,6 +6,8 @@
 export const PREVIEW_LIMITS=Object.freeze({downloadBytes:64*1024*1024,jsonBytes:8*1024*1024,accessorValues:8*1024*1024,nodes:4096,depth:128,materials:2048,images:128,imageBytes:32*1024*1024,imagePixels:32*1024*1024,imageDimension:8192,textureBytes:192*1024*1024,primitives:4096,vertices:1000000,indices:3000000});
 // Only these required semantics are implemented; optional unknown semantics warn.
 export const SUPPORTED_REQUIRED_EXTENSIONS=Object.freeze(['KHR_materials_unlit','KHR_materials_emissive_strength']);
+const NORMAL_UV_WARNING='法线贴图暂未应用；保留模型源法线';
+const NORMAL_WEBGL_WARNING='当前设备不支持法线贴图预览；保留模型源法线';
 function budget(value,max,label){if(!Number.isSafeInteger(value)||value<0||value>max)throw Error('Preview budget exceeded: '+label);return value;}
 export async function readBoundedResponse(response,limit=PREVIEW_LIMITS.downloadBytes){
   const declared=response.headers.get('content-length');
@@ -68,9 +70,11 @@ function textureInfo(info) {
 }
 function readMaterial(source={},index=-1) {
   const pbr=source.pbrMetallicRoughness||{},extensions=source.extensions||{};
+  const normal=textureInfo(source.normalTexture);
   return {index,name:source.name||'glTF 默认材质',baseColor:vec(pbr.baseColorFactor,4,[1,1,1,1]),
     baseColorTexture:textureInfo(pbr.baseColorTexture),emissiveTexture:textureInfo(source.emissiveTexture),
     metallicRoughnessTexture:textureInfo(pbr.metallicRoughnessTexture),
+    normalTexture:normal&&{...normal,scale:finite(source.normalTexture.scale,1)},
     metallic:clamp(finite(pbr.metallicFactor,1),0,1),roughness:clamp(finite(pbr.roughnessFactor,1),0.04,1),
     emissive:vec(source.emissiveFactor,3,[0,0,0]).map(x=>x*finite(extensions.KHR_materials_emissive_strength?.emissiveStrength,1)),
     alphaMode:['OPAQUE','MASK','BLEND'].includes(source.alphaMode)?source.alphaMode:'OPAQUE',
@@ -87,22 +91,35 @@ function blendedSkinMatrices(skin,palette) {
   return skin.influences.map(influence=>{
     const matrix=Array(16).fill(0);
     for(const [joint,weight]of influence)for(let k=0;k<16;k++)matrix[k]+=palette[joint][k]*weight;
-    return {matrix,normal:normalMatrix(matrix).matrix};
+    return {matrix,normal:normalMatrix(matrix)};
   });
 }
-function poseVertices(positions,normals,localPositions,localNormals,matrix,skin,palette,center=[0,0,0],scale=1) {
-  const matrices=skin?blendedSkinMatrices(skin,palette):null,nm=skin?null:normalMatrix(matrix).matrix;
+function poseVertices(positions,normals,localPositions,localNormals,matrix,skin,palette,center=[0,0,0],scale=1,tangentPose=null) {
+  const matrices=skin?blendedSkinMatrices(skin,palette):null,nm=skin?null:normalMatrix(matrix);
   for(let j=0;j<localPositions.length;j+=3) {
-    const transform=skin?matrices[skin.vertexInfluences[j/3]]:null;
-    const position=transformPoint(localPositions.subarray(j,j+3),transform?transform.matrix:matrix);
+    const vertex=j/3,transform=skin?matrices[skin.vertexInfluences[vertex]]:null;
+    const affine=transform?.matrix||matrix,normal=transform?.normal||nm;
+    const position=transformPoint(localPositions.subarray(j,j+3),affine);
     if(!position.every(Number.isFinite))throw Error('骨骼/节点变换产生无效位置');
     for(let k=0;k<3;k++)positions[j+k]=(position[k]-center[k])*scale;
-    if(localNormals)normals.set(transformNormal(localNormals.subarray(j,j+3),transform?transform.normal:nm),j);
+    if(localNormals)normals.set(transformNormal(localNormals.subarray(j,j+3),normal.matrix),j);
+    if(tangentPose) {
+      const offset=vertex*4,[x,y,z,w]=tangentPose.local.subarray(offset,offset+4);
+      const direction=[
+        x*affine[0]+y*affine[4]+z*affine[8],
+        x*affine[1]+y*affine[5]+z*affine[9],
+        x*affine[2]+y*affine[6]+z*affine[10]
+      ];
+      const length=Math.hypot(...direction);
+      const usable=length>1e-12&&Number.isFinite(length)&&Math.abs(w)===1&&Math.abs(normal.det)>=1e-12;
+      // Reflections reverse the orientation of the normal/tangent cross product.
+      tangentPose.posed.set(usable?[...direction.map(value=>value/length),Math.sign(normal.det)*w]:[0,0,0,0],offset);
+    }
   }
 }
 
 // Exported separately so the exact browser parser can be validated on real assets in Node.
-export function parseGLB(input) {
+export function parseGLB(input,{validatePreviewImages=true}={}) {
   budget(input?.byteLength,PREVIEW_LIMITS.downloadBytes,'model bytes');
   const buffer=input instanceof ArrayBuffer?input:input?.buffer?.slice(input.byteOffset,input.byteOffset+input.byteLength);
   if(!buffer||buffer.byteLength<20) throw Error('模型文件不完整');
@@ -177,14 +194,20 @@ export function parseGLB(input) {
     const result={data:out,size:n,count:a.count};cache.set(index,result);return result;
   }
   const materials=(json.materials||[]).map(readMaterial),fallback=readMaterial();
+  function reserveImage(size) {
+    if(!validatePreviewImages)budget(size,PREVIEW_LIMITS.imageBytes,'image bytes');
+    imageBytes+=size;
+    budget(imageBytes,validatePreviewImages?PREVIEW_LIMITS.imageBytes:PREVIEW_LIMITS.downloadBytes,'aggregate image bytes');
+  }
   const images=(json.images||[]).map(image=>{
     let bytes,mimeType=image.mimeType;
-    if(image.bufferView!==undefined){const v=bufferView(image.bufferView);imageBytes+=v.byteLength;budget(imageBytes,PREVIEW_LIMITS.imageBytes,'aggregate image bytes');bytes=bin.slice(v.byteOffset||0,(v.byteOffset||0)+v.byteLength);}
+    if(image.bufferView!==undefined){const v=bufferView(image.bufferView);reserveImage(v.byteLength);bytes=bin.slice(v.byteOffset||0,(v.byteOffset||0)+v.byteLength);}
     else if(typeof image.uri==='string'&&image.uri.startsWith('data:')){
       const match=/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]*={0,2})$/.exec(image.uri);if(!match)throw Error('Unsupported image data URI');
-      mimeType=match[1];imageBytes+=Math.floor(match[2].length*3/4);budget(imageBytes,PREVIEW_LIMITS.imageBytes,'aggregate image bytes');bytes=Uint8Array.from(atob(match[2]),c=>c.charCodeAt(0)).buffer;
+      mimeType=match[1];reserveImage(Math.floor(match[2].length*3/4));bytes=Uint8Array.from(atob(match[2]),c=>c.charCodeAt(0)).buffer;
     }else throw Error('External images are not supported');
-    const dimensions=imageDimensions(bytes,mimeType);imagePixels+=dimensions.pixels;budget(imagePixels,PREVIEW_LIMITS.imagePixels,'aggregate image pixels');
+    const dimensions=imageDimensions(bytes,mimeType);imagePixels+=dimensions.pixels;
+    if(validatePreviewImages)budget(imagePixels,PREVIEW_LIMITS.imagePixels,'aggregate image pixels');
     return {name:image.name||'',mimeType,bytes,...dimensions};
   });
   const textures=(json.textures||[]).map(texture=>({source:texture.source,sampler:json.samplers?.[texture.sampler]||{}}));
@@ -263,13 +286,21 @@ export function parseGLB(input) {
       }
       const localIndices=new Uint32Array(indices);
       if(!skinData&&nm.det<0) for(let j=0;j<indices.length;j+=3) [indices[j+1],indices[j+2]]=[indices[j+2],indices[j+1]];
-      const positions=new Float32Array(pos.count*3);
-      poseVertices(positions,null,pos.data,null,instance.world,skinData,skinData?skinPalette(skinData,j=>nodeWorlds.get(j)):null);
-      const normals=new Float32Array(pos.count*3);let localNormals=null;
+      const material=primitive.material===undefined?fallback:materials[primitive.material];if(!material) throw Error('模型材质引用无效');
+      const normalMap=material.normalTexture?.texCoord===0&&attr.TEXCOORD_0!==undefined?material.normalTexture:null;
+      const positions=new Float32Array(pos.count*3),normals=new Float32Array(pos.count*3);
+      let localNormals=null,localTangents=null,tangents=null;
       if(attr.NORMAL!==undefined) {
         const source=access(attr.NORMAL);if(source.count!==pos.count||source.size!==3) throw Error('模型法线属性无效');localNormals=source.data;
-        poseVertices(positions,normals,pos.data,source.data,instance.world,skinData,skinData?skinPalette(skinData,j=>nodeWorlds.get(j)):null);
-      } else {
+        if(normalMap?.scale&&attr.TANGENT!==undefined) {
+          const authored=access(attr.TANGENT);
+          if(authored.count!==pos.count||authored.size!==4)throw Error('模型切线属性无效');
+          localTangents=authored.data;tangents=new Float32Array(pos.count*4);
+        }
+      }
+      poseVertices(positions,normals,pos.data,localNormals,instance.world,skinData,skinData?skinPalette(skinData,j=>nodeWorlds.get(j)):null,
+        undefined,undefined,tangents?{local:localTangents,posed:tangents}:null);
+      if(!localNormals) {
         for(let j=0;j<indices.length;j+=3) {
           const a=indices[j]*3,b=indices[j+1]*3,c=indices[j+2]*3;
           const ux=positions[b]-positions[a],uy=positions[b+1]-positions[a+1],uz=positions[b+2]-positions[a+2],vx=positions[c]-positions[a],vy=positions[c+1]-positions[a+1],vz=positions[c+2]-positions[a+2];
@@ -287,12 +318,11 @@ export function parseGLB(input) {
         for(let j=0;j<pos.count;j++) for(let k=0;k<source.size;k++) colors[j*4+k]=source.data[j*source.size+k];
       }
       if(!indices.length) continue;
-      const material=primitive.material===undefined?fallback:materials[primitive.material];if(!material) throw Error('模型材质引用无效');
       for(const info of [material.baseColorTexture,material.emissiveTexture,material.metallicRoughnessTexture]) if(info&&info.texCoord!==0) warnings.push('当前仅支持 UV0，其他 UV 通道的贴图未应用');
-      if(material.source.normalTexture) warnings.push('法线贴图暂未应用；保留模型源法线');
+      if(material.normalTexture&&!normalMap&&!material.unlit) warnings.push(NORMAL_UV_WARNING);
       for(const index of indices) for(let axis=0;axis<3;axis++) {const v=positions[index*3+axis];if(!Number.isFinite(v))throw Error('节点变换产生无效位置');if(instance.visible!==false){min[axis]=Math.min(min[axis],v);max[axis]=Math.max(max[axis],v);}}
-      restPrimitives.push({nodeIndex:instance.index,localPositions:pos.data,localNormals,localIndices,rendererType:mesh.extras?.rendererType||null,skin:instance.node.skin,skinData,morph:!!primitive.targets?.length});
-      primitives.push({positions,normals,uv,colors,indices:new Uint32Array(indices),visible:instance.visible!==false,material,nodeName:instance.node.name||mesh.name||'',nodeIndex:instance.index,extras:primitive.extras||{},sourceAttributes:Object.keys(attr),
+      restPrimitives.push({nodeIndex:instance.index,localPositions:pos.data,localNormals,localTangents,localIndices,rendererType:mesh.extras?.rendererType||null,skin:instance.node.skin,skinData,morph:!!primitive.targets?.length});
+      primitives.push({positions,normals,tangents,uv,colors,indices:new Uint32Array(indices),visible:instance.visible!==false,material,normalMap,nodeName:instance.node.name||mesh.name||'',nodeIndex:instance.index,extras:primitive.extras||{},sourceAttributes:Object.keys(attr),
         sourceMeshId:mesh.extras?.sourceId||null,sourceMeshSha256:mesh.extras?.sourceObjectSha256||null,sourcePrimitiveIndex,sourcePrimitiveMode:mode});
     }
   }
@@ -553,12 +583,13 @@ export function createSourceAnimation(geometry,data) {
       if(!matrix.every(Number.isFinite))throw Error('动画层级变换产生无效矩阵');
       worlds.set(index,matrix);return matrix;
     }
-    if(!live)live={...geometry,primitives:geometry.primitives.map(p=>({...p,positions:p.positions.slice(),normals:p.normals.slice(),indices:p.indices.slice(),center:p.center.slice()}))};
+    if(!live)live={...geometry,primitives:geometry.primitives.map(p=>({...p,positions:p.positions.slice(),normals:p.normals.slice(),tangents:p.tangents?.slice(),indices:p.indices.slice(),center:p.center.slice()}))};
     const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity],{center,scale}=geometry.bounds;
     for(let pi=0;pi<live.primitives.length;pi++) {
       const p=live.primitives[pi],rest=source.restPrimitives[pi];
       if(!clip.affected.has(pi)) {
         const original=geometry.primitives[pi];p.positions.set(original.positions);p.normals.set(original.normals);p.indices.set(original.indices);p.center=original.center.slice();p.visible=original.visible;
+        if(p.tangents)p.tangents.set(original.tangents);
         includeVisibleTriangleBounds(p,min,max);
         continue;
       }
@@ -566,7 +597,8 @@ export function createSourceAnimation(geometry,data) {
       p.visible=rest.nodeIndex<0||visible(rest.nodeIndex);
       p.indices.set(rest.localIndices);
       if(!rest.skinData&&nm.det<0)for(let j=0;j<p.indices.length;j+=3)[p.indices[j+1],p.indices[j+2]]=[p.indices[j+2],p.indices[j+1]];
-      poseVertices(p.positions,p.normals,rest.localPositions,rest.localNormals,matrix,rest.skinData,rest.skinData?skinPalette(rest.skinData,world):null,center,scale);
+      poseVertices(p.positions,p.normals,rest.localPositions,rest.localNormals,matrix,rest.skinData,rest.skinData?skinPalette(rest.skinData,world):null,center,scale,
+        p.tangents?{local:rest.localTangents,posed:p.tangents}:null);
       if(!rest.localNormals) {
         p.normals.fill(0);
         for(let j=0;j<p.indices.length;j+=3) {
@@ -649,18 +681,21 @@ attribute vec3 aPosition;
 attribute vec3 aNormal;
 attribute vec2 aUV;
 attribute vec4 aColor;
+attribute vec4 aTangent;
 uniform mat4 uMVP;
 uniform mat4 uModelView;
 varying mediump vec3 vNormal;
 varying mediump vec3 vViewPosition;
 varying mediump vec2 vUV;
 varying mediump vec4 vColor;
+varying mediump vec4 vTangent;
 void main() {
   gl_Position=uMVP*vec4(aPosition,1.0);
   vViewPosition=(uModelView*vec4(aPosition,1.0)).xyz;
   vNormal=mat3(uModelView)*aNormal;
   vUV=aUV;
   vColor=aColor;
+  vTangent=vec4(mat3(uModelView)*aTangent.xyz,aTangent.w);
 }`;
 export const FRAGMENT_SHADER=`
 precision highp float;
@@ -668,6 +703,7 @@ varying mediump vec3 vNormal;
 varying mediump vec3 vViewPosition;
 varying mediump vec2 vUV;
 varying mediump vec4 vColor;
+varying mediump vec4 vTangent;
 uniform sampler2D uBaseMap;
 uniform sampler2D uEmissiveMap;
 uniform sampler2D uMRMap;
@@ -677,6 +713,10 @@ uniform mat3 uMRUV;
 uniform vec2 uBaseWrap;
 uniform vec2 uEmissiveWrap;
 uniform vec2 uMRWrap;
+uniform sampler2D uNormalMap;
+uniform mat3 uNormalUV;
+uniform vec2 uNormalWrap;
+uniform float uNormalScale;
 uniform vec4 uBaseColor;
 uniform vec3 uEmissive;
 uniform vec3 uLightDirection;
@@ -703,8 +743,42 @@ vec3 toLinear(vec3 c) {return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(ve
 vec3 toSRGB(vec3 c) {return mix(c*12.92,1.055*pow(max(c,vec3(0.0)),vec3(1.0/2.4))-0.055,step(vec3(0.0031308),c));}
 float wrapCoordinate(float v,float mode) {if(mode>1.5)return 1.0-abs(mod(v,2.0)-1.0);if(mode>0.5)return fract(v);return v;}
 vec2 wrapUV(vec2 uv,vec2 mode) {return vec2(wrapCoordinate(uv.x,mode.x),wrapCoordinate(uv.y,mode.y));}
+vec3 normalFromMap(vec3 N) {
+  if(uNormalScale==0.0||uUnlit>0.5) return N;
+  vec2 uv=(uNormalUV*vec3(vUV,1.0)).xy;
+#ifdef PREVIEW_NORMAL_DERIVATIVES
+  vec2 dx=dFdx(uv),dy=dFdy(uv);
+  vec3 dpdx=dFdx(vViewPosition),dpdy=dFdy(vViewPosition);
+#endif
+  vec3 sampled=texture2D(uNormalMap,wrapUV(uv,uNormalWrap)).xyz*2.0-1.0;
+  sampled.xy*=uNormalScale;
+  vec3 tangent=vTangent.xyz;
+  tangent-=N*dot(N,tangent);
+  float lengthSquared=dot(tangent,tangent);
+  float handedness=sign(vTangent.w);
+  if(handedness==0.0||!(lengthSquared>0.0)) {
+#ifdef PREVIEW_NORMAL_DERIVATIVES
+    // Differentiate continuous UVs before emulated NPOT wrapping.
+    float det=dx.x*dy.y-dx.y*dy.x;
+    if(det==0.0) return N;
+    tangent=(dpdx*dy.y-dpdy*dx.y)*sign(det);
+    vec3 bitangent=(dpdy*dx.x-dpdx*dy.x)*sign(det);
+    tangent-=N*dot(N,tangent);
+    lengthSquared=dot(tangent,tangent);
+    if(!(lengthSquared>0.0)) return N;
+    handedness=dot(cross(N,tangent),bitangent)<0.0?-1.0:1.0;
+#else
+    return N;
+#endif
+  }
+  vec3 T=tangent*inversesqrt(lengthSquared);
+  vec3 value=mat3(T,cross(N,T)*handedness,N)*sampled;
+  return dot(value,value)>0.0?normalize(value):N;
+}
 void main() {
   if(uWire>0.5) {gl_FragColor=vec4(0.19,0.34,0.30,1.0);return;}
+  vec3 N=normalFromMap(normalize(vNormal));
+  if(!gl_FrontFacing) N=-N;
   vec4 texel=texture2D(uBaseMap,wrapUV((uBaseUV*vec3(vUV,1.0)).xy,uBaseWrap));
   vec4 base=vec4(toLinear(texel.rgb),texel.a)*uBaseColor*vColor;
   if(uAlphaMode>0.5&&uAlphaMode<1.5&&base.a<uAlphaCutoff) discard;
@@ -715,8 +789,6 @@ void main() {
   if(uMode>1.5&&uFlatCanopy>0.5) {gl_FragColor=vec4(uCanopyColor,clamp(alpha,0.0,1.0));return;}
   vec3 albedo=base.rgb*uBaseTint;
   if(uMode>0.5&&uMode<1.5) albedo=vec3(0.42,0.46,0.43)*uBaseTint;
-  vec3 N=normalize(vNormal);
-  if(!gl_FrontFacing) N=-N;
   vec3 L=normalize(uLightDirection);
   float ndl=max(dot(N,L),0.0);
   vec3 lighting=uAmbientColor*uAmbient+mix(uShadowColor,uKeyColor,ndl)*uKey;
@@ -828,10 +900,14 @@ async function decodeImage(image,signal) {
 
 // Plan only maps used by rendered primitives. Shader wrap is per binding for NPOT
 // images; it does not require another GPU allocation with the same sampler.
-export function planTextureUploads(geometry,images=geometry.images) {
+export function planTextureUploads(geometry,images=geometry.images,{normalMaps=true}={}) {
   const uploads=[],maps=new Map(),unique=new Map();let bytes=4;
   const required=new Set();
-  for(const primitive of geometry.primitives)for(const info of [primitive.material.baseColorTexture,primitive.material.emissiveTexture,primitive.material.metallicRoughnessTexture])if(info?.texCoord===0)required.add(info.index);
+  for(const primitive of geometry.primitives){
+    const {baseColorTexture,emissiveTexture,metallicRoughnessTexture}=primitive.material;
+    for(const info of [baseColorTexture,emissiveTexture,metallicRoughnessTexture])if(info?.texCoord===0)required.add(info.index);
+    if((normalMaps||primitive.tangents)&&primitive.normalMap?.scale)required.add(primitive.normalMap.index);
+  }
   const wrapMode=value=>value===33071?0:value===33648?2:1;
   for(const index of required) {
     const descriptor=geometry.textures[index],image=images[descriptor?.source];
@@ -869,6 +945,7 @@ export async function createViewer(container,url,options={}) {
   let disposed=false,contextLost=false,ready=false,geometry,animation=null,animationFrame={center:[0,0,0],scale:1},gpu=null,resize=null,frame=0,drag=null,isWire=false;
   let camera=sanitizeCamera(options.camera),profile=prepareProfile(options.profile),materialRules=prepareMaterialRules(options.materialRules);
   const gl=canvas.getContext('webgl',{antialias:true,alpha:true,premultipliedAlpha:true,preserveDrawingBuffer:!!options._sharedResources});
+  const normalMaps=!!gl?.getExtension('OES_standard_derivatives');
   if(options._sharedResources)options._sharedResources.gl=gl;
   function showStatus(message,afterFailure=false) {
     if((!afterFailure&&(disposed||activeViewers.get(container)!==api))||canvas.parentNode!==container)return;
@@ -894,18 +971,22 @@ export async function createViewer(container,url,options={}) {
     if(!options._sharedResources)gl?.getExtension('WEBGL_lose_context')?.loseContext();
   }
   function requestDraw(){if(options._sharedResources||!alive()||contextLost||frame)return;frame=requestAnimationFrame(()=>{frame=0;draw();});}
+  function packPrimitive(primitive,packed,stride) {
+    for(let j=0;j<primitive.indices.length;j++) {
+      const index=primitive.indices[j],offset=j*stride;
+      packed.set(primitive.positions.subarray(index*3,index*3+3),offset);
+      packed.set(primitive.normals.subarray(index*3,index*3+3),offset+3);
+      packed.set(primitive.uv.subarray(index*2,index*2+2),offset+6);
+      packed.set(primitive.colors.subarray(index*4,index*4+4),offset+8);
+      if(primitive.tangents)packed.set(primitive.tangents.subarray(index*4,index*4+4),offset+12);
+    }
+  }
   function applyAnimationGeometry(next) {
     geometry=next;
     if(gpu&&!contextLost)for(let i=0;i<gpu.primitives.length;i++) {
       const item=gpu.primitives[i],primitive=geometry.primitives[i];item.source=primitive;
-      for(let j=0;j<primitive.indices.length;j++) {
-        const index=primitive.indices[j],offset=j*12;
-        item.packed.set(primitive.positions.subarray(index*3,index*3+3),offset);
-        item.packed.set(primitive.normals.subarray(index*3,index*3+3),offset+3);
-        // A negative animated scale changes winding, not source triangle identity.
-        item.packed.set(primitive.uv.subarray(index*2,index*2+2),offset+6);
-        item.packed.set(primitive.colors.subarray(index*4,index*4+4),offset+8);
-      }
+      // A negative animated scale changes winding, not source triangle identity.
+      packPrimitive(primitive,item.packed,item.stride);
       gl.bindBuffer(gl.ARRAY_BUFFER,item.buffer);gl.bufferData(gl.ARRAY_BUFFER,item.packed,gl.DYNAMIC_DRAW);
       item.wireDirty=true;
     }
@@ -966,7 +1047,11 @@ export async function createViewer(container,url,options={}) {
         if(!alive())reject(cancelledError());else if(blob)resolve(blob);else reject(Error('预览图像生成失败'));
       },'image/png'));
     },
-    get warnings(){return geometry?.warnings?.slice()||[];},get stats(){return geometry?{triangles:geometry.triangles,vertices:geometry.vertices,materials:geometry.materials.length,textures:geometry.textures.length}:null;}};
+    get warnings(){
+      const warnings=geometry?.warnings?.slice()||[];
+      if(!normalMaps&&geometry?.primitives.some(primitive=>!primitive.tangents&&primitive.normalMap?.scale&&!primitive.material.unlit))warnings.push(NORMAL_WEBGL_WARNING);
+      return warnings;
+    },get stats(){return geometry?{triangles:geometry.triangles,vertices:geometry.vertices,materials:geometry.materials.length,textures:geometry.textures.length}:null;}};
   activeViewers.set(container,api);
   if(options.signal){if(options.signal.aborted){dispose();return api;}listen(options.signal,'abort',dispose,{once:true});}
   if(!gl){dispose();showStatus('此浏览器无法使用 WebGL，请查看静态预览',true);throw Error('此浏览器无法使用 WebGL');}
@@ -984,15 +1069,17 @@ export async function createViewer(container,url,options={}) {
       try{
         vert=compile(gl.VERTEX_SHADER,VERTEX_SHADER);
         const highp=gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER,gl.HIGH_FLOAT)?.precision>0;
-        frag=compile(gl.FRAGMENT_SHADER,highp?FRAGMENT_SHADER:FRAGMENT_SHADER.replace('precision highp float','precision mediump float'));
+        const normalHeader=normalMaps?'#extension GL_OES_standard_derivatives : enable\n#define PREVIEW_NORMAL_DERIVATIVES\n':'';
+        frag=compile(gl.FRAGMENT_SHADER,normalHeader+(highp?FRAGMENT_SHADER:FRAGMENT_SHADER.replace('precision highp float','precision mediump float')));
         gl.attachShader(program,vert);gl.attachShader(program,frag);gl.linkProgram(program);
         if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error('三维着色器链接失败：'+gl.getProgramInfoLog(program));
       }finally{if(vert)gl.deleteShader(vert);if(frag)gl.deleteShader(frag);}
-      for(const key of ['aPosition','aNormal','aUV','aColor'])gpu.loc[key]=gl.getAttribLocation(program,key);
+      for(const key of ['aPosition','aNormal','aUV','aColor','aTangent'])gpu.loc[key]=gl.getAttribLocation(program,key);
       for(const key of ['uMVP','uModelView','uBaseMap','uEmissiveMap','uMRMap','uBaseUV','uEmissiveUV','uMRUV','uBaseWrap','uEmissiveWrap','uMRWrap','uBaseColor','uEmissive','uLightDirection','uAmbientColor','uKeyColor','uShadowColor','uBaseTint','uAmbient','uKey','uBands','uLightThreshold','uSaturation','uContrast','uAlphaMode','uAlphaCutoff','uMetallic','uRoughness','uMode','uUnlit','uFlatCanopy','uCanopyColor','uWire'])gpu.loc[key]=gl.getUniformLocation(program,key);
+      for(const key of ['uNormalMap','uNormalUV','uNormalWrap','uNormalScale'])gpu.loc[key]=gl.getUniformLocation(program,key);
       if(shared){shared.program=program;shared.loc=gpu.loc;}
     }
-    const plan=planTextureUploads(geometry,decodedImages),maxSize=gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const plan=planTextureUploads(geometry,decodedImages,{normalMaps}),maxSize=gl.getParameter(gl.MAX_TEXTURE_SIZE);
     for(const upload of plan.uploads){const img=decodedImages[upload.source];if(img.width>maxSize||img.height>maxSize)throw Error('源贴图超过此设备支持的最大尺寸');}
     function uploadTexture(img,sampler) {
       const texture=gl.createTexture();if(!texture)throw Error('无法分配预览贴图');
@@ -1012,14 +1099,10 @@ export async function createViewer(container,url,options={}) {
     const uploaded=new Map(plan.uploads.map(upload=>[upload,uploadTexture(decodedImages[upload.source],upload)]));
     gpu.maps=[];for(const [index,map] of plan.maps)gpu.maps[index]={texture:uploaded.get(map.upload),wrap:map.wrap};
     for(const primitive of geometry.primitives) {
-      const packed=new Float32Array(primitive.indices.length*12);
-      for(let j=0;j<primitive.indices.length;j++) {
-        const index=primitive.indices[j],offset=j*12;
-        packed.set(primitive.positions.subarray(index*3,index*3+3),offset);packed.set(primitive.normals.subarray(index*3,index*3+3),offset+3);
-        packed.set(primitive.uv.subarray(index*2,index*2+2),offset+6);packed.set(primitive.colors.subarray(index*4,index*4+4),offset+8);
-      }
+      const stride=primitive.tangents?16:12,packed=new Float32Array(primitive.indices.length*stride);
+      packPrimitive(primitive,packed,stride);
       const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,packed,gl.STATIC_DRAW);
-      gpu.primitives.push({buffer,packed,wire:null,wireDirty:false,count:primitive.indices.length,source:primitive});
+      gpu.primitives.push({buffer,packed,stride,wire:null,wireDirty:false,count:primitive.indices.length,source:primitive});
     }
   }
   function bindAttribute(name,size,stride,offset) {
@@ -1048,13 +1131,19 @@ export async function createViewer(container,url,options={}) {
       if(isWire) {
         if(!item.wire||item.wireDirty){const wire=new Float32Array(item.count*6),indices=item.source.indices,positions=item.source.positions;let out=0;for(let j=0;j<indices.length;j+=3)for(const k of [0,1,1,2,2,0]){const index=indices[j+k]*3;wire.set(positions.subarray(index,index+3),out);out+=3;}if(!item.wire)item.wire=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,item.wire);gl.bufferData(gl.ARRAY_BUFFER,wire,item.wireDirty?gl.DYNAMIC_DRAW:gl.STATIC_DRAW);item.wireDirty=false;}
         gl.bindBuffer(gl.ARRAY_BUFFER,item.wire);bindAttribute('aPosition',3,0,0);
-        for(const name of ['aNormal','aUV','aColor'])if(loc[name]>=0){gl.disableVertexAttribArray(loc[name]);gl.vertexAttrib4f(loc[name],0,1,0,1);}
+        for(const name of ['aNormal','aUV','aColor','aTangent'])if(loc[name]>=0){gl.disableVertexAttribArray(loc[name]);gl.vertexAttrib4f(loc[name],0,1,0,1);}
         gl.drawArrays(gl.LINES,0,item.count*2);continue;
       }
-      gl.bindBuffer(gl.ARRAY_BUFFER,item.buffer);bindAttribute('aPosition',3,48,0);bindAttribute('aNormal',3,48,12);bindAttribute('aUV',2,48,24);bindAttribute('aColor',4,48,32);
+      const stride=item.stride*4;
+      gl.bindBuffer(gl.ARRAY_BUFFER,item.buffer);bindAttribute('aPosition',3,stride,0);bindAttribute('aNormal',3,stride,12);bindAttribute('aUV',2,stride,24);bindAttribute('aColor',4,stride,32);
+      if(item.source.tangents)bindAttribute('aTangent',4,stride,48);
+      else if(loc.aTangent>=0){gl.disableVertexAttribArray(loc.aTangent);gl.vertexAttrib4f(loc.aTangent,0,0,0,0);}
       gl.uniform4fv(loc.uBaseColor,material.baseColor);gl.uniform3fv(loc.uEmissive,material.emissive);gl.uniform1f(loc.uAlphaMode,material.alphaMode==='MASK'?1:material.alphaMode==='BLEND'?2:0);
       gl.uniform1f(loc.uAlphaCutoff,p.alphaCutoff??material.alphaCutoff);gl.uniform1f(loc.uMetallic,material.metallic);gl.uniform1f(loc.uRoughness,material.roughness);gl.uniform1f(loc.uUnlit,p.unlit===null?(material.unlit?1:0):(p.unlit?1:0));
-      for(const [unit,info,map,uv,wrap]of [[0,material.baseColorTexture,'uBaseMap','uBaseUV','uBaseWrap'],[1,material.emissiveTexture,'uEmissiveMap','uEmissiveUV','uEmissiveWrap'],[2,material.metallicRoughnessTexture,'uMRMap','uMRUV','uMRWrap']]) {
+      const normalMap=normalMaps||item.source.tangents?item.source.normalMap:null;
+      const maps=[[0,material.baseColorTexture,'uBaseMap','uBaseUV','uBaseWrap'],[1,material.emissiveTexture,'uEmissiveMap','uEmissiveUV','uEmissiveWrap'],[2,material.metallicRoughnessTexture,'uMRMap','uMRUV','uMRWrap'],[3,normalMap,'uNormalMap','uNormalUV','uNormalWrap']];
+      gl.uniform1f(loc.uNormalScale,normalMap?.scale??0);
+      for(const [unit,info,map,uv,wrap]of maps) {
         const mapTexture=info&&info.texCoord===0?gpu.maps[info.index]||gpu.white:gpu.white;gl.activeTexture(gl.TEXTURE0+unit);gl.bindTexture(gl.TEXTURE_2D,mapTexture.texture);gl.uniform2fv(loc[wrap],mapTexture.wrap);gl.uniform1i(loc[map],unit);gl.uniformMatrix3fv(loc[uv],false,new Float32Array(info?.transform||[1,0,0,0,1,0,0,0,1]));
       }
       // Preserve the original buffer, winding and triangle order. Only the exact
@@ -1067,7 +1156,7 @@ export async function createViewer(container,url,options={}) {
     gl.depthMask(true);gl.disable(gl.BLEND);
   }
   listen(canvas,'webglcontextlost',event=>{event.preventDefault();contextLost=true;cancelAnimationFrame(frame);frame=0;gpu=null;if(options._sharedResources){options._sharedResources.program=null;options._sharedResources.loc=null;}showStatus('三维上下文暂时中断，等待浏览器恢复…');});
-  listen(canvas,'webglcontextrestored',()=>{if(!alive())return;contextLost=false;if(!ready)return;try{initializeGPU();showStatus('');requestDraw();}catch(error){releaseGPU();showStatus(error.message);options.onError?.(error);}});
+  listen(canvas,'webglcontextrestored',()=>{if(!alive())return;contextLost=false;if(normalMaps)gl.getExtension('OES_standard_derivatives');if(!ready)return;try{initializeGPU();showStatus('');requestDraw();}catch(error){releaseGPU();showStatus(error.message);options.onError?.(error);}});
   if(!options._sharedResources){
   listen(canvas,'pointerdown',event=>{if(event.button!==0)return;drag={id:event.pointerId,x:event.clientX,y:event.clientY};canvas.setPointerCapture(event.pointerId);});
   listen(canvas,'pointermove',event=>{if(!drag||drag.id!==event.pointerId)return;camera=sanitizeCamera({yaw:camera.yaw+(event.clientX-drag.x)*0.009,pitch:camera.pitch+(event.clientY-drag.y)*0.009},camera);drag.x=event.clientX;drag.y=event.clientY;requestDraw();notifyCamera();});
@@ -1093,7 +1182,7 @@ export async function createViewer(container,url,options={}) {
     // Thumbnail jobs can never bind or sample motion, even if options are reused.
     if(!options._sharedResources)animation=createSourceAnimation(geometry,options.animationData);
     if(!alive()){dispose();return api;}
-    const required=new Set(planTextureUploads(geometry).uploads.map(upload=>upload.source));
+    const required=new Set(planTextureUploads(geometry,geometry.images,{normalMaps}).uploads.map(upload=>upload.source));
     // Sequential decoding bounds transient image memory and checks cancellation between images.
     for(const index of required) {
       const source=geometry.images[index];if(!source)throw Error('材质内嵌图像缺失');

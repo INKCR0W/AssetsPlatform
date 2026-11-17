@@ -295,6 +295,12 @@ function isUsableIdentity(id) {
 }
 function normalizeObject(record, basesById, basesBySourceId) {
   const base = basesById.get(record.assetId) ?? basesById.get(record.prefabId) ?? basesBySourceId.get(record.sourceId) ?? {};
+  const explicitModel = record.assemblyModelUrl || record.modelUrl || record.materialModelUrl;
+  const modelUrl = explicitModel || base.modelUrl;
+  const matchingPreview = modelUrl === base.modelUrl;
+  const sourceModelUrl = record.sourceModelUrl === undefined
+    ? (matchingPreview ? base.sourceModelUrl : undefined) : record.sourceModelUrl;
+  const matchingSource = (sourceModelUrl || modelUrl) === (base.sourceModelUrl || base.modelUrl);
   const merged = {
     ...base,
     ...record
@@ -308,9 +314,12 @@ function normalizeObject(record, basesById, basesBySourceId) {
     type: 'object',
     isObject: true,
     category: objectCategory(merged),
-    modelUrl: record.assemblyModelUrl || record.modelUrl || record.materialModelUrl || base.modelUrl,
-    modelAsset: record.modelAsset || (record.assemblyModelUrl || record.modelUrl || record.materialModelUrl ? undefined : base.modelAsset),
-    variants: record.variants || (record.assemblyModelUrl || record.modelUrl || record.materialModelUrl ? [] : base.variants),
+    modelUrl,
+    sourceModelUrl,
+    sourceModelSha256: record.sourceModelSha256 ?? (matchingPreview && matchingSource ? base.sourceModelSha256 : undefined),
+    downloadOptions: record.downloadOptions ?? (matchingPreview && matchingSource ? base.downloadOptions : undefined),
+    modelAsset: record.modelAsset || (explicitModel ? undefined : base.modelAsset),
+    variants: record.variants || (explicitModel ? [] : base.variants),
     previewUrl: record.previewUrl || record.thumbnailUrl || base.previewUrl,
     notes: Array.isArray(record.notes) ? record.notes : Array.isArray(base.notes) ? base.notes : [],
     provenance: record.provenance || base.provenance || {},
@@ -952,7 +961,9 @@ function provenanceHTML(item, {showGeometry = true} = {}) {
     value !== null && value !== undefined && value !== '').map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(printable(value))}</dd>`).join('');
 }
 function downloadsHTML(item) {
-  return [[item.metadataUrl, item.metadataUrl?.includes('#') ? '索引分片' : '元数据'], [item.modelAsset ? null : item.modelUrl, item.isObject ? '轨道 GLB' : '几何 GLB'], [item.ikMetadataUrl, '约束数据'], [animationRecords.get(item.id)?.variants?.constraint?.modelUrl, '约束 GLB'], [item.originalUrl, '原始图像'], [item.sourceCodeUrl, '反编译文本'], ...(item.downloads || []).filter(d => d.kind === 'url').map(d => [d.url, d.label])].filter(([url]) => url).map(([url, label]) => `<a class="light-btn" href="${esc(url)}" download>${esc(label)}</a>`).join('');
+  const modelUrl = item.sourceModelUrl || (item.modelAsset ? null : item.modelUrl);
+  const modelLabel = item.sourceModelUrl ? '原始 GLB' : item.isObject ? '轨道 GLB' : '几何 GLB';
+  return [[item.metadataUrl, item.metadataUrl?.includes('#') ? '索引分片' : '元数据'], [modelUrl, modelLabel], [item.ikMetadataUrl, '约束数据'], [animationRecords.get(item.id)?.variants?.constraint?.modelUrl, '约束 GLB'], [item.originalUrl, '原始图像'], [item.sourceCodeUrl, '反编译文本'], ...(item.downloads || []).filter(d => d.kind === 'url').map(d => [d.url, d.label])].filter(([url]) => url).map(([url, label]) => `<a class="light-btn" href="${esc(url)}" download>${esc(label)}</a>`).join('');
 }
 function matchesBaseModel(item, variant) {
   if (!variant) return true;
@@ -1038,14 +1049,16 @@ function renderDetailAsset(item, detail) {
     : hasImage ? '图像预览' : '该条目未提供可预览文件';
   $('#detail-metrics').innerHTML = detailMetricHTML(item, detail);
   $('#detail-provenance').innerHTML = provenanceHTML(item, {showGeometry:false});
-  const filename = detailFileName(modelUrl);
+  const original = detail.usesAnimationModel ? undefined : entry.sourceModelUrl;
+  const downloadModel = original || (modelAsset ? null : modelUrl);
+  const filename = detailFileName(original || modelUrl);
   const file = $('#detail-download-file');
   file.textContent = filename;
   file.hidden = !filename;
   const metadata = entry.metadataUrl || item.metadataUrl;
   const constraint = detail.sameModel ? animationRecords.get(item.id)?.variants?.constraint?.modelUrl : null;
   const links = [
-    [modelAsset ? null : modelUrl, isGLB ? '下载当前 GLB' : '下载当前模型', 'primary-btn'],
+    [downloadModel, original ? '下载原始 GLB' : isGLB ? '下载当前 GLB' : '下载当前模型', 'primary-btn'],
     [metadata, metadata?.includes('#') ? '索引分片' : '下载元数据', modelUrl ? 'light-btn' : 'primary-btn'],
     [entry.ikMetadataUrl, '约束数据'],
     [constraint !== modelUrl ? constraint : null, '约束 GLB'],

@@ -18,8 +18,8 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 120125,
-      "sha256": "2024aafdedda99789047f83b1a0ada4f6e8611a933f1734ddf59e48c98fc45a4"
+      "bytes": 120933,
+      "sha256": "a0523c26bf2be77524c2da93258e59efd1cf41105b8e71660ac6815a9d6cf2a6"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -134,20 +134,20 @@
       "sha256": "e3c1cf5d9dd956da686be0ed609cbfd01fb49419ad80aa73af95a466d2c8a4d1"
     },
     "shared/asset-package.mjs": {
-      "bytes": 21350,
-      "sha256": "2c1162502ce9954be2a9c8040ead9b340a045830b56db9de34e46ac6af87c4eb"
+      "bytes": 25846,
+      "sha256": "749b1c4dff24a295226297e2484c0cddc2489e1b89ed44163b12d8c196b952c3"
     },
     "shared/common-render-profiles.mjs": {
       "bytes": 4946,
       "sha256": "3576acd7d654d80824444728fa58c65dcad26e5ed08c0131d6c6150a354d6682"
     },
     "shared/download-catalog.mjs": {
-      "bytes": 3330,
-      "sha256": "536556dd616a97bdbcbcaff3e6a41ad9d2cf2136f14ab4de40401cef4bb9d7ce"
+      "bytes": 4326,
+      "sha256": "75bf150d49f53e501f0bdfa0fd70be4cf6d7c20de8799e3acb329b2307815c5e"
     },
     "shared/download-workbench.mjs": {
-      "bytes": 22689,
-      "sha256": "b438732329f91a5b420c1cb57754a2d5adbc54ac3603390c5eff878ef0c1219f"
+      "bytes": 28833,
+      "sha256": "e925e5a70e25bbd8ed4a03d2472f68d49c2e7aa79b9fc4038a542090b0fb7218"
     },
     "shared/json-budget.mjs": {
       "bytes": 2812,
@@ -214,8 +214,8 @@
       "sha256": "4f0b03bd57e4a0d67672ddd284f206cbcbd31ebfff6c5b8c65478951496a1ae4"
     },
     "shared/unity-bundle.mjs": {
-      "bytes": 2367,
-      "sha256": "7d4b9a061ff5d31fd9680bf819ac5d03a7a1f8a65d4d71cca026f153bdb33492"
+      "bytes": 2554,
+      "sha256": "64c13fcd460f7ac26ee2a834b9d47b458b69ceb25fe14b97960e77202731becd"
     },
     "shared/viewer-adapter.mjs": {
       "bytes": 611,
@@ -234,12 +234,12 @@
       "sha256": "f3f162f4713b1333a4c510ed0afd53065f6c9d55fe8a495ac9d3c7f6fcf49a7a"
     },
     "tests/asset-package.test.mjs": {
-      "bytes": 8086,
-      "sha256": "15964bab5b33e9954f692fe3da601b520bdacb97a5144a9f8a0645bac40013aa"
+      "bytes": 12869,
+      "sha256": "85dad2b239a6a168d8a898297439f90c2dd1ca101b17981baa71b3ff10816113"
     },
     "tests/download-catalog.test.mjs": {
-      "bytes": 2062,
-      "sha256": "95bb773cc1c428126cd7fc4e3cec1582331c684b199a27079f5cd2a5b7079b42"
+      "bytes": 3655,
+      "sha256": "30e7f19db41d2222e3f5893ec034097967fed00e76b6dc85dc5b20a862a936c4"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,
@@ -254,8 +254,8 @@
       "sha256": "db6bb4d300bd713b68f69b7f016f690d31480f5681cae75a04442c65cb0d9413"
     },
     "tests/preview-boundaries.test.mjs": {
-      "bytes": 26029,
-      "sha256": "119860d1ce77eb3f9a47793388841537d77937a7abf33c79d08890f334c6da10"
+      "bytes": 30356,
+      "sha256": "69ab9ca7f701e4b1860be5009dc9e8cf046f9e5f9606d07f30759961129e5736"
     },
     "tests/server-boundaries.test.py": {
       "bytes": 2999,
@@ -266,28 +266,28 @@
       "sha256": "ec0584badfa8c76c91decaf5f1658afbb4eee81f25f779bda7d9103e9c4143f4"
     },
     "tests/unity-bundle.test.mjs": {
-      "bytes": 4865,
-      "sha256": "acff9881d55ff0543aefe4aefff35a0c73c3e2e811b24aa3b4d905877c1b2827"
+      "bytes": 6161,
+      "sha256": "e8d2a8a81148142b16677a94af02a0031bf458ef73d2e247782b748494dd5ba0"
     },
     "tests/workbench-actions.test.mjs": {
       "bytes": 5597,
       "sha256": "09b5e9a3bd8266cb2369590a30d0109d2d4b11558680c26b29240f3bdeaee686"
     },
     "validate-workspace.mjs": {
-      "bytes": 4612,
-      "sha256": "e70746ca747609bc4bf279fb97ed3f0eba03b6fb454670f148f5a83480386113"
+      "bytes": 5596,
+      "sha256": "9487cc60d1bc7026259283d5eb5668555c4c9ec3247860f8ebf65dfe86b31c72"
     },
     "verify.mjs": {
       "bytes": 2158,
       "sha256": "0808abbe10a5fc3d8ed0031c809a4632579aebf25500b4662eaa2ac55212970d"
     },
     "viewer.mjs": {
-      "bytes": 86086,
-      "sha256": "615a3bc23988e65153694a0530dbf61c19fcf803bb08711c0ba087cc7aa6b982"
+      "bytes": 90426,
+      "sha256": "c83a40d8093de7d50b661c3e9cd528278314b9a3bcd0c6703ea89569a1996455"
     },
     "workbench.css": {
-      "bytes": 5075,
-      "sha256": "27bec9616a710358e18b184533cb4124cff8736aee23180acd2b397e1c887dc2"
+      "bytes": 5474,
+      "sha256": "8cdbd8fbafa8111d688dd98549f1b99251d03cd836e5b2a768d0813f9bba4494"
     }
   }
 }

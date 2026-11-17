@@ -30,6 +30,19 @@ for(const path of ['apps/reviewer/app.mjs','reference/hosted/review-frontend/sha
  const variants=[{id:'whole',modelUrl:'whole.glb'}];
  assert.deepEqual(normalize({id:'object',assetId:'base',modelUrl:'whole.glb',variants},new Map([['base',base]]),new Map()).variants,variants);
  assert.equal(normalize({id:'object',assetId:'base'},new Map([['base',base]]),new Map()).modelAsset,base.modelAsset);
+ if(path.startsWith('apps/')){
+  const splitBase={...base,sourceModelUrl:'fragment-source.glb',sourceModelSha256:'a'.repeat(64),downloadOptions:{textures:[]}};
+  const bases=new Map([['base',splitBase]]);
+  const overridden=normalize({id:'object',assetId:'base',assemblyModelUrl:'assembly.glb'},bases,new Map());
+  assert.equal(overridden.sourceModelUrl,undefined);assert.equal(overridden.sourceModelSha256,undefined);
+  assert.equal(overridden.downloadOptions,undefined);
+  const same=normalize({id:'object',assetId:'base',modelUrl:'fragment.glb'},bases,new Map());
+  assert.equal(same.sourceModelUrl,splitBase.sourceModelUrl);assert.equal(same.sourceModelSha256,splitBase.sourceModelSha256);
+  assert.deepEqual(same.downloadOptions,splitBase.downloadOptions);
+  const differentSource=normalize({id:'object',assetId:'base',modelUrl:'fragment.glb',sourceModelUrl:'other-source.glb'},bases,new Map());
+  assert.equal(differentSource.sourceModelUrl,'other-source.glb');assert.equal(differentSource.sourceModelSha256,undefined);
+  assert.equal(differentSource.downloadOptions,undefined);
+ }
  if(path.startsWith('reference/')){
   for(const modelUrl of ['./fragment.glb','https://example.test/assets/fragment.glb']){
    const same=normalize({id:'object',assetId:'base',modelUrl},new Map([['base',base]]),new Map());

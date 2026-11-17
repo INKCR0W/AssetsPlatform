@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {parseGLB, PREVIEW_LIMITS} from '../apps/reviewer/viewer.mjs';
+import {PREVIEW_LIMITS} from '../apps/reviewer/viewer.mjs';
 import {validateProjectDescriptor,validateProjectStorage,validateCatalogData} from '../apps/reviewer/shared/project-schema.mjs';
+import {preparePreviewGLB} from './prepare-preview-glb.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const app = path.join(root, 'apps/reviewer');
@@ -48,7 +49,10 @@ function embeddedDocument(bytes) {
   if(bytes.readUInt32LE(16)!==0x4e4f534a || jsonLength%4 || jsonLength>PREVIEW_LIMITS.jsonBytes || 28+jsonLength>bytes.length) throw Error('Invalid GLB JSON chunk or budget');
   const binOffset=20+jsonLength, binLength=bytes.readUInt32LE(binOffset);
   if(bytes.readUInt32LE(binOffset+4)!==0x004e4942 || binLength%4 || binOffset+8+binLength!==bytes.length) throw Error('Expected exactly one JSON and one BIN chunk');
-  return JSON.parse(bytes.subarray(20,binOffset).toString('utf8').replace(/\0+$/,''));
+  return {
+    document:JSON.parse(bytes.subarray(20,binOffset).toString('utf8').replace(/\0+$/,'')),
+    binary:bytes.subarray(binOffset+8)
+  };
 }
 function json(file, value) { fs.writeFileSync(file, JSON.stringify(value,null,2)+'\n', {flag:'wx'}); }
 // This is an explicit local export, never a public build or a source-directory mutation.
@@ -92,13 +96,13 @@ export function importDirectory({source, output, id, label=id}) {
           while(offset<bytes.length) { const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset); if(!n) throw Error('Source changed during read'); offset+=n; }
           if(fs.fstatSync(fd).size!==stat.size) throw Error('Source changed during read');
         } finally { fs.closeSync(fd); }
-        const doc=embeddedDocument(bytes);
+        const {document,binary}=embeddedDocument(bytes);
         // Fail closed on every external buffer/image URI, even if unused by the scene.
-        if ((doc.buffers||[]).some(b=>b.uri!==undefined) || (doc.images||[]).some(i=>i.uri!==undefined && !/^data:image\/(png|jpeg);base64,/.test(i.uri))) throw Error('GLB must contain its buffers and images: '+e.name);
-        const geometry=parseGLB(bytes);
+        if ((document.buffers||[]).some(b=>b.uri!==undefined) || (document.images||[]).some(i=>i.uri!==undefined && !/^data:image\/(png|jpeg);base64,/.test(i.uri))) throw Error('GLB must contain its buffers and images: '+e.name);
+        const {geometry,preview}=preparePreviewGLB(bytes,document,binary);
         totalBytes+=bytes.length;
         const relative=path.relative(source,file).split(path.sep).join('/');
-        files.push({relative,bytes,sha256:hash(bytes),key:hash(relative),name:path.basename(file,path.extname(file)).trim() || 'Model '+hash(relative).slice(0,12),vertices:geometry.vertices,triangles:geometry.triangles,warnings:geometry.warnings});
+        files.push({relative,bytes,preview,sha256:hash(bytes),key:hash(relative),name:path.basename(file,path.extname(file)).trim() || 'Model '+hash(relative).slice(0,12),vertices:geometry.vertices,triangles:geometry.triangles,warnings:geometry.warnings});
       }
     }
   }
@@ -109,7 +113,10 @@ export function importDirectory({source, output, id, label=id}) {
   Object.assign(descriptor,{id,datasetId});
   Object.assign(descriptor.config,{slug:id,label,reviewKey:`${id}:${datasetId}:reviews`,renderPreferenceKey:`${id}:${datasetId}:profile`,importFormat:'asset-review-local-glb',exportPrefix:id,auditSections:[{title:'本地 GLB 目录',text:'由明确选择的本地文件夹导入。仅完成 CPU 解析；GPU、材质外观与资产权利未验证。原生动画不自动启用。'}]});
   descriptor.categoryLabels={model:'模型'};
-  const assets=files.map(f=>({id:'mesh-'+f.key,name:f.name,type:'mesh',category:'model',modelUrl:`assets/${f.key}.glb`,vertexCount:f.vertices,triangleCount:f.triangles}));
+  const assets=files.map(f=>({id:'mesh-'+f.key,name:f.name,type:'mesh',category:'model',
+    modelUrl:`assets/${f.key}.glb`,
+    ...(f.preview ? {sourceModelUrl:`assets/${f.key}.source.glb`,sourceModelSha256:f.sha256} : {}),
+    vertexCount:f.vertices,triangleCount:f.triangles}));
   const objects=assets.map(a=>({...a,id:a.id.replace('mesh-','object-'),type:'object',assetId:a.id,assemblyStatus:'CPU parsed; GPU unverified'}));
   validateProjectDescriptor(descriptor,{id});
   validateProjectStorage([descriptor]);
@@ -130,8 +137,13 @@ export function importDirectory({source, output, id, label=id}) {
     json(path.join(output,'library/assets/objects-catalog.json'),{version:1,objects});
     json(path.join(output,'library/assets/render-profiles.json'),{profiles:[]});
     json(path.join(output,'library/assets/canopy-rules.json'),{version:1,flatCanopySourceMaterialIds:[]});
-    for (const f of files) fs.writeFileSync(path.join(output,'library/assets',f.key+'.glb'),f.bytes,{flag:'wx'});
-    const report={schema:'asset-review-local-import/1',projectId:id,datasetId,models:files.length,totalBytes,gpu:'not-verified',animations:'not-enabled',files:files.map(({bytes,...f})=>f)};
+    for (const f of files) {
+      const directory=path.join(output,'library/assets');
+      fs.writeFileSync(path.join(directory,f.key+'.glb'),f.preview || f.bytes,{flag:'wx'});
+      if (f.preview) fs.writeFileSync(path.join(directory,f.key+'.source.glb'),f.bytes,{flag:'wx'});
+    }
+    const report={schema:'asset-review-local-import/1',projectId:id,datasetId,models:files.length,totalBytes,gpu:'not-verified',animations:'not-enabled',files:files.map(({bytes,preview,...f})=>
+      preview ? {...f,previewBytes:preview.length,previewSha256:hash(preview)} : f)};
     json(path.join(output,'import-report.json'),report);
     fs.writeFileSync(path.join(output,'README.txt'),'Local AssetsPlatform workspace\n\nValidate: node validate-workspace.mjs\nRun: node server.mjs (or python3 serve.py)\nOpen: http://127.0.0.1:8768/\nNo installation or account required. Keep this folder private.\nReview state is stored in this browser, not this folder: use 导出完整审阅快照 (Export full review snapshot) before clearing browser data. The UTF-8 snapshot must fit the import limit; an oversized catalogue report cannot restore reviews. If the snapshot exceeds the limit, keep browser state and seek maintainer assistance. JSON backups do not contain models.\nDo not edit dataset IDs to bypass review isolation. Reimporting changed content creates a new dataset identity.\nCPU parsing passed; GPU/material appearance, animation, and asset redistribution rights are not verified. See import-report.json for per-model warnings and relative source names.\n',{flag:'wx'});
     return {output,projectId:id,datasetId,models:files.length,totalBytes,warnings:files.flatMap(f=>f.warnings.map(w=>`${f.relative}: ${w}`))};

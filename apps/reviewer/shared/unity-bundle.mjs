@@ -35,10 +35,13 @@ export function createUnityBundle(rows, {projectId, datasetId}) {
     if (animationCount ? !/^[0-9a-f]{64}$/.test(defaultClipNameSha256) : defaultClipNameSha256 !== null) {
       throw Error('模型配置的默认动画无效');
     }
+    const textures = (row.textures || []).map(({id,label,materialIndex,materialLabel}) =>
+      ({id,label,materialIndex,materialLabel}));
     const details = {
       assetId:row.asset.id, name:row.asset.name, versionId:row.version.id,
       version:row.version.label, model, modelFile, modelSha256,
-      texture:row.texture?.label || null, animations:row.motionLabels, defaultClipName:row.defaultClipName
+      texture:textures.map(texture => texture.label).join('、') || null, textures,
+      animations:row.motionLabels, defaultClipName:row.defaultClipName
     };
     entries.push({name:model, data:row.bytes}, {
       name:`${folder}/asset.json`,

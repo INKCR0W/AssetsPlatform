@@ -16,12 +16,16 @@ function unpack(bytes) {
 function fixture(change = () => {}) {
   const {doc, bin} = unpack(source);
   let binary = bin;
-  function add(values,type,count) {
-    const bytes = Buffer.alloc(values.length * 4);
-    values.forEach((value,index) => bytes.writeFloatLE(value, index * 4));
+  function add(values,type,count,componentType = 5126) {
+    const float = componentType === 5126;
+    const bytes = Buffer.alloc(values.length * (float ? 4 : 2));
+    values.forEach((value,index) => {
+      if (float) bytes.writeFloatLE(value,index * 4);
+      else bytes.writeUInt16LE(value,index * 2);
+    });
     const bufferView = doc.bufferViews.push({buffer:0,byteOffset:binary.length,byteLength:bytes.length}) - 1;
-    binary = Buffer.concat([binary,bytes]);
-    return doc.accessors.push({bufferView,type,count,componentType:5126}) - 1;
+    binary = Buffer.concat([binary,bytes,Buffer.alloc((-bytes.length & 3))]);
+    return doc.accessors.push({bufferView,type,count,componentType}) - 1;
   }
   doc.meshes[0].primitives[0].attributes.TEXCOORD_0 = add(Array(16).fill(0),'VEC2',8);
   const input = add([0,1],'SCALAR',2);
@@ -32,7 +36,7 @@ function fixture(change = () => {}) {
     name,samplers:[{input,output,interpolation}],channels:[{sampler:0,target:{node:0,path:'translation'}}]
   }));
   doc.materials[0].name = '原始材质';
-  change(doc);
+  change(doc,add);
   doc.buffers[0].byteLength = binary.length;
   const json = Buffer.from(JSON.stringify(doc));
   const padded = Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
@@ -102,6 +106,40 @@ test('binds only the chosen material and selected clips in the exported GLB', ()
   assert.throws(() => prepareModel(original,{clips:[1,1]}),/动画选择无效/);
 });
 
+test('replaces two material slots independently and rejects duplicate slot assignments', () => {
+  const original = fixture(doc => {
+    doc.materials.push({...doc.materials[0],name:'第二材质'}, {...doc.materials[0],name:'保留材质'});
+    const primitives = doc.meshes[0].primitives;
+    primitives.push({...primitives[0],material:1}, {...primitives[0],material:2});
+  });
+  const textures = [0,1].map(materialIndex => ({bytes:png,mimeType:'image/png',materialIndex}));
+  const {doc,bin} = unpack(prepareModel(original,{textures}).bytes);
+  const baseTextures = doc.materials.map(material => material.pbrMetallicRoughness.baseColorTexture?.index);
+  assert.deepEqual(baseTextures,[0,1,undefined]);
+  for (const index of baseTextures.slice(0,2)) {
+    const image = doc.images[doc.textures[index].source];
+    const {byteOffset,byteLength} = doc.bufferViews[image.bufferView];
+    assert.deepEqual(new Uint8Array(bin.subarray(byteOffset,byteOffset+byteLength)),png);
+  }
+  assert.throws(() => prepareModel(original,{textures:[textures[0],textures[0]]}),/贴图材质槽重复/);
+});
+
+test('export assembles original-size image references beyond the CPU preview aggregate pixel cap', () => {
+  const big = Buffer.from(png);
+  big.writeUInt32BE(4096,16);
+  big.writeUInt32BE(4096,20);
+  const original = fixture(doc => {
+    doc.images = Array.from({length:3}, () => ({uri:'data:image/png;base64,'+big.toString('base64')}));
+  });
+  assert.throws(() => prepareModel(original,{clips:[1]}),/aggregate image pixels/);
+  const result = prepareModel(original,{clips:[1],validatePreview:false});
+  const {doc} = unpack(result.bytes);
+  assert.deepEqual(doc.images,unpack(original).doc.images);
+  assert.deepEqual(doc.animations.map(clip => clip.name),['Slide']);
+  assert.equal(result.defaultClipName,'Slide');
+  assert.equal(result.animationData,null);
+});
+
 test('copies compatible standalone curves but rejects a changed node identity or rest transform', () => {
   const target = fixture();
   const external = fixture(doc => { doc.animations[0].name = 'External lift'; });
@@ -112,6 +150,57 @@ test('copies compatible standalone curves but rejects a changed node identity or
   assert.equal(runtime.getNodeWorldMatrices().get(0)[13],.5);
   const mismatched = fixture(doc => { doc.nodes[0].translation = [0,0,1]; });
   assert.throws(() => prepareModel(target,{extraClips:[{bytes:mismatched,index:0}]}),/绑定不同/);
+});
+
+test('maps renamed node indices through static helpers while checking the animation frame', () => {
+  const target = fixture();
+  const externalFixture = (adjust = () => {}) => fixture(doc => {
+    const animated = doc.nodes[0];
+    doc.nodes = [{name:'Helper A',children:[1]}, {children:[3]}, {name:'Unrelated',translation:[2,0,0]}, animated];
+    doc.scenes[0].nodes = [0,2];
+    for (const clip of doc.animations) clip.channels[0].target.node = 3;
+    adjust(doc);
+  });
+  const output = prepareModel(target,{clips:[],extraClips:[{bytes:externalFixture(),index:0}]});
+  assert.equal(unpack(output.bytes).doc.animations[0].channels[0].target.node,0);
+  const runtime = createSourceAnimation(parseGLB(output.bytes),output.animationData);
+  runtime.sample('clip-0',.5);
+  assert.equal(runtime.getNodeWorldMatrices().get(0)[13],.5);
+  for (const bytes of [
+    externalFixture(doc => { doc.nodes[1].translation = [0,1,0]; }),
+    externalFixture(doc => { doc.nodes[2].name = doc.nodes[3].name; })
+  ]) {
+    assert.throws(() => prepareModel(target,{extraClips:[{bytes,index:0}]}),/绑定不同/);
+  }
+});
+
+test('matches a reordered skin palette by joint name and rejects a changed inverse bind matrix', () => {
+  const skinned = ({reorder = false, changeBind = false} = {}) => fixture((doc,add) => {
+    const meshNode = doc.nodes[0];
+    meshNode.skin = 0;
+    const jointA = {name:'Joint A', children:[2]};
+    const jointB = {name:'Joint B'};
+    doc.nodes.push(jointA,jointB);
+    doc.scenes[0].nodes.push(1);
+    const attributes = doc.meshes[0].primitives[0].attributes;
+    const count = doc.accessors[attributes.POSITION].count;
+    attributes.JOINTS_0 = add(Array(count * 4).fill(0),'VEC4',count,5123);
+    attributes.WEIGHTS_0 = add(Array.from({length:count * 4}, (_,index) => index % 4 === 0 ? 1 : 0),'VEC4',count);
+    const identity = [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+    const inverseForA = identity.slice();
+    if (changeBind) inverseForA[12] = .2;
+    const inverseForB = identity.slice();
+    inverseForB[13] = .3;
+    const joints = reorder ? [2,1] : [1,2];
+    const matrices = reorder ? [...inverseForB,...inverseForA] : [...inverseForA,...inverseForB];
+    doc.skins = [{joints,skeleton:1,inverseBindMatrices:add(matrices,'MAT4',2)}];
+    for (const clip of doc.animations) clip.channels[0].target.node = 1;
+  });
+  const target = skinned();
+  const output = prepareModel(target,{clips:[],extraClips:[{bytes:skinned({reorder:true}),index:0}]});
+  assert.deepEqual(unpack(output.bytes).doc.skins[0].joints,[1,2]);
+  assert.equal(unpack(output.bytes).doc.animations[0].channels[0].target.node,1);
+  assert.throws(() => prepareModel(target,{extraClips:[{bytes:skinned({changeBind:true}),index:0}]}),/绑定不同/);
 });
 
 test('exports distinct clip names and identifies the first clip when native and external names collide', () => {

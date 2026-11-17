@@ -53,6 +53,29 @@ test('repeat downloads of a modified configuration get a separate Unity import p
   assert.notEqual(await exportFile(replacement), originalPath);
 });
 
+test('lists each selected material and texture in the root manifest only', async () => {
+  const base = new URL('../demo-a/assets/', import.meta.url);
+  const bytes = await readFile(new URL('crate-light.glb', base));
+  const chosen = [
+    {id:'leather', label:'蓝色皮革', materialIndex:0, materialLabel:'皮革'},
+    {id:'metal', label:'黑色金属', materialIndex:1, materialLabel:'金属'}
+  ];
+  const row = {asset:{id:'crate', name:'木箱'}, version:{id:'light', label:'轻量版'},
+    bytes, modelSha256:await modelContentHash(bytes), motionLabels:[], defaultClipName:null,
+    defaultClipNameSha256:null,
+    textures:chosen.map(texture => ({...texture, sourceUrl:'/private/asset.png'}))};
+  const files = unpackStoredEntries(createUnityBundle([row], {projectId:'demo-a', datasetId:'example-v1'}));
+  const decoder = new TextDecoder();
+  const [entry] = JSON.parse(decoder.decode(files.get('manifest.json'))).items;
+  assert.deepEqual(entry.textures, chosen);
+  assert.equal(entry.texture, '蓝色皮革、黑色金属');
+  const marker = JSON.parse(decoder.decode(files.get(entry.model.split('/')[0] + '/asset.json')));
+  assert.deepEqual(marker, {
+    format:'asset-workbench-unity/configuration/2', model:entry.model, animationCount:0,
+    defaultClipNameSha256:null
+  });
+});
+
 test('keeps 800 full names in the manifest and bounds the Unity import marker', async () => {
   const bytes = await readFile(new URL('../demo-a/assets/crate-standard.glb', import.meta.url));
   const motionLabels = Array.from({length:800}, (_, index) => 'LongAnimationVariant_'.repeat(6) + index);

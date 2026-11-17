@@ -8,7 +8,7 @@ const directory=JSON.parse(fs.readFileSync(new URL('project-directory.json',root
 const source=fs.readFileSync(new URL(directory.projects[0].config.replace(/[^/]+$/,'assets/cube.glb'),root));
 const original=JSON.parse(source.subarray(20,20+source.readUInt32LE(12)));
 const binStart=20+source.readUInt32LE(12),bin=source.subarray(binStart+8);
-function model(change){const json=structuredClone(original);change(json);let text=Buffer.from(JSON.stringify(json));text=Buffer.concat([text,Buffer.alloc((4-text.length%4)%4,32)]);const out=Buffer.alloc(28+text.length+bin.length);out.writeUInt32LE(0x46546c67);out.writeUInt32LE(2,4);out.writeUInt32LE(out.length,8);out.writeUInt32LE(text.length,12);out.writeUInt32LE(0x4e4f534a,16);text.copy(out,20);out.writeUInt32LE(bin.length,20+text.length);out.writeUInt32LE(0x004e4942,24+text.length);bin.copy(out,28+text.length);return out;}
+function model(change,binary=bin){const json=structuredClone(original);change(json);json.buffers[0].byteLength=binary.length;let text=Buffer.from(JSON.stringify(json));text=Buffer.concat([text,Buffer.alloc((4-text.length%4)%4,32)]);const out=Buffer.alloc(28+text.length+binary.length);out.writeUInt32LE(0x46546c67);out.writeUInt32LE(2,4);out.writeUInt32LE(out.length,8);out.writeUInt32LE(text.length,12);out.writeUInt32LE(0x4e4f534a,16);text.copy(out,20);out.writeUInt32LE(binary.length,20+text.length);out.writeUInt32LE(0x004e4942,24+text.length);binary.copy(out,28+text.length);return out;}
 function png(w,h){const b=Buffer.alloc(24);b.writeUInt32BE(0x89504e47);b.writeUInt32BE(0x0d0a1a0a,4);b.writeUInt32BE(13,8);b.writeUInt32BE(0x49484452,12);b.writeUInt32BE(w,16);b.writeUInt32BE(h,20);return b;}
 test('real packaged cube remains parseable',()=>assert(parseGLB(source).primitives.length>0));
 test('every unknown required extension fails closed',()=>{for(const ext of ['UNKNOWN_required','KHR_draco_mesh_compression','EXT_meshopt_compression'])assert.throws(()=>parseGLB(model(j=>j.extensionsRequired=[ext])),/Unsupported required extension/);});
@@ -33,6 +33,14 @@ test('aggregate accessor allocation checked before access',()=>assert.throws(()=
 test('node and image collection limits checked',()=>{assert.throws(()=>parseGLB(model(j=>j.nodes=Array(4097).fill({}))),/nodes/);assert.throws(()=>parseGLB(model(j=>j.images=Array(129).fill({}))),/images/);});
 test('image dimensions fail before browser decode',()=>{const huge=png(100000,1);assert.throws(()=>imageDimensions(huge.buffer.slice(huge.byteOffset,huge.byteOffset+huge.byteLength),'image/png'),/image width/);const b=png(8192,8192);assert.throws(()=>parseGLB(model(j=>j.images=[{uri:'data:image/png;base64,'+b.toString('base64')}])),/aggregate image pixels/);});
 test('repeated embedded images count against aggregate pixels',()=>{const uri='data:image/png;base64,'+png(4096,4096).toString('base64');assert.throws(()=>parseGLB(model(j=>j.images=Array(3).fill({uri}))),/aggregate image pixels/);});
+test('source validation permits larger aggregate image dimensions without relaxing per-image limits',()=>{
+  const uri='data:image/png;base64,'+png(4096,4096).toString('base64');
+  const source=model(json=>{json.images=[{uri},{uri},{uri}];});
+  assert.throws(()=>parseGLB(source),/aggregate image pixels/);
+  assert.equal(parseGLB(source,{validatePreviewImages:false}).images.length,3);
+  const oversized='data:image/png;base64,'+png(PREVIEW_LIMITS.imageDimension+1,1).toString('base64');
+  assert.throws(()=>parseGLB(model(json=>{json.images=[{uri:oversized}];}),{validatePreviewImages:false}),/image width/);
+});
 test('external and unsupported image formats fail closed',()=>assert.throws(()=>parseGLB(model(j=>j.images=[{uri:'texture.png'}])),/External images/));
 test('model byte budget precedes decoding',()=>assert.throws(()=>parseGLB(new ArrayBuffer(PREVIEW_LIMITS.downloadBytes+1)),/model bytes/));
 test('streaming enforces actual bytes even without honest content length',async()=>{for(const headers of [{},{'content-length':'1'}]){let cancelled=false;const body=new ReadableStream({pull(c){c.enqueue(new Uint8Array(6));},cancel(){cancelled=true;}});await assert.rejects(readBoundedResponse(new Response(body,{headers}),10),/download bytes/);assert(cancelled);}});
@@ -77,6 +85,62 @@ test('GPU plan omits unused mipmaps and enforces total bytes including white fal
   const noMips=planTextureUploads(texturedModel(8,2,[{minFilter:9729}]));
   assert.equal(noMips.bytes,68);assert.equal(noMips.uploads[0].mipmaps,false);
   assert.equal(planTextureUploads(parseGLB(source)).bytes,4);
+});
+test('UV0 normal maps use their selected sampler and are omitted on unsupported devices or UVs',()=>{
+  const makeNormalMap=(texCoord=0,scale=.45)=>model(json=>{
+    const primitive=json.meshes[0].primitives[0];
+    primitive.attributes.TEXCOORD_0=json.accessors.push({componentType:5126,type:'VEC2',
+      count:json.accessors[primitive.attributes.POSITION].count})-1;
+    json.images=[{uri:'data:image/png;base64,'+png(8,4).toString('base64')}];
+    json.samplers=[{minFilter:9729,wrapS:33648}];
+    json.textures=[{source:0,sampler:0}];
+    json.materials[0].normalTexture={index:0,texCoord,scale,extensions:{KHR_texture_transform:{offset:[.25,.125]}}};
+  });
+  const supported=parseGLB(makeNormalMap());
+  assert.deepEqual(supported.warnings,[]);
+  assert.equal(supported.primitives[0].normalMap.scale,.45);
+  assert.deepEqual(supported.primitives[0].normalMap.transform,[1,0,0,-0,1,0,.25,.125,1]);
+  const plan=planTextureUploads(supported);
+  assert.equal(plan.maps.get(0).upload.wrapS,33648);
+  assert.equal(plan.bytes,4+8*4*4);
+  assert.equal(planTextureUploads(supported,undefined,{normalMaps:false}).uploads.length,0);
+  assert.equal(planTextureUploads(parseGLB(makeNormalMap(0,0))).uploads.length,0);
+  const unsupported=parseGLB(makeNormalMap(1));
+  assert.match(unsupported.warnings[0],/法线贴图暂未应用/);
+  assert.equal(planTextureUploads(unsupported).uploads.length,0);
+});
+test('reflected authored tangents keep direction and update handedness in preview poses',()=>{
+  const position=original.meshes[0].primitives[0].attributes.POSITION;
+  const count=original.accessors[position].count;
+  const vector=Buffer.alloc(count*16),normals=Buffer.alloc(count*12);
+  for(let index=0;index<count;index++){
+    vector.writeFloatLE(1,index*16);
+    vector.writeFloatLE(-1,index*16+12);
+    normals.writeFloatLE(1,index*12+8);
+  }
+  const glb=model(json=>{
+    json.extras={sourceId:'tangent-fixture'};
+    json.nodes=[{mesh:0,scale:[-2,1,1],extras:{sourceId:'reflected'}}];
+    json.scenes=[{nodes:[0]}];json.scene=0;
+    const primitive=json.meshes[0].primitives[0];
+    const view=json.bufferViews.push({buffer:0,byteOffset:bin.length,byteLength:vector.length})-1;
+    primitive.attributes.TANGENT=json.accessors.push({componentType:5126,type:'VEC4',count,bufferView:view})-1;
+    const normalView=json.bufferViews.push({buffer:0,byteOffset:bin.length+vector.length,byteLength:normals.length})-1;
+    primitive.attributes.NORMAL=json.accessors.push({componentType:5126,type:'VEC3',count,bufferView:normalView})-1;
+    primitive.attributes.TEXCOORD_0=json.accessors.push({componentType:5126,type:'VEC2',count})-1;
+    json.images=[{uri:'data:image/png;base64,'+png(8,4).toString('base64')}];
+    json.textures=[{source:0}];
+    json.materials[0].normalTexture={index:0};
+  },Buffer.concat([bin,vector,normals]));
+  const geometry=parseGLB(glb);
+  assert.deepEqual(Array.from(geometry.primitives[0].tangents.subarray(0,4)),[-1,0,0,1]);
+  assert.equal(planTextureUploads(geometry,undefined,{normalMaps:false}).uploads.length,1);
+  const data={schemaVersion:1,coordinateSystem:'glTF',sourceId:'tangent-fixture',
+    nodes:[{id:'reflected',glbNodeIndex:0,translation:[0,0,0],rotation:[0,0,0,1],scale:[-2,1,1]}],
+    clips:[{id:'non-reflected',duration:1,tracks:[{nodeId:'reflected',path:'scale',interpolation:'LINEAR',times:[0,1],values:[[-2,1,1],[2,1,1]]}]}]};
+  const animation=createSourceAnimation(geometry,data);
+  assert.deepEqual(Array.from(animation.sample('non-reflected',1).primitives[0].tangents.subarray(0,4)),[1,0,0,-1]);
+  assert.deepEqual(Array.from(animation.reset().primitives[0].tangents.subarray(0,4)),[-1,0,0,1]);
 });
 function animatedModel(instances=1) {
   const geometry=parseGLB(model(json=>{

@@ -117,9 +117,9 @@ export function inspectModel(input) {
 }
 
 function replaceTexture(document, builder, texture) {
-  const {materialIndex,mimeType} = texture;
+  const {materialIndex,mimeType} = texture || {};
   const material = Number.isSafeInteger(materialIndex) && document.materials?.[materialIndex];
-  const bytes = modelBytes(texture.bytes);
+  const bytes = modelBytes(texture?.bytes);
   if (!material || !['image/png','image/jpeg'].includes(mimeType) || bytes.length > PREVIEW_LIMITS.imageBytes) {
     throw Error('贴图格式、大小或材质槽无效');
   }
@@ -207,20 +207,111 @@ function nodeRest(node) {
   };
 }
 
-// Copying only exact, named layouts avoids guessing joint retargets from similar mesh names.
-function rigSignature(asset) {
+const RIG_MISMATCH = '外部动画与当前模型的节点或骨架绑定不同';
+const IDENTITY_REST = JSON.stringify(nodeRest({}));
+const IDENTITY_MATRIX = JSON.stringify([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+
+function rigLayout(asset) {
   const {document} = asset;
   const nodes = document.nodes || [];
-  const names = nodes.map(node => node.name);
-  if (!nodes.length || names.some(name => typeof name !== 'string' || !name.trim()) || new Set(names).size !== names.length) {
-    throw Error('模型缺少唯一的节点名称，无法匹配外部动画');
+  if (!nodes.length || nodes.length > PREVIEW_LIMITS.nodes) throw Error(RIG_MISMATCH);
+  const active = visibleSceneNodes(document);
+  const parents = new Map();
+  const names = new Map();
+  const joints = new Set();
+  for (const index of active) {
+    const {name,children = []} = nodes[index];
+    if (typeof name === 'string' && name.trim()) names.set(name,names.has(name) ? null : index);
+    for (const child of children) {
+      if (!active.has(child) || parents.has(child)) throw Error(RIG_MISMATCH);
+      parents.set(child,index);
+    }
   }
-  return JSON.stringify({
-    nodes:nodes.map(node => [node.name,node.children ?? [],node.skin ?? null,node.matrix ?? nodeRest(node)]),
-    roots:document.scenes?.[document.scene ?? 0]?.nodes ?? [],
-    skins:(document.skins || []).map(skin => [skin.joints,skin.skeleton ?? null,skin.inverseBindMatrices === undefined
-      ? null : accessorRows(asset,skin.inverseBindMatrices,'MAT4',16)])
+  const skins = document.skins || [];
+  if (skins.length > 1024) throw Error(RIG_MISMATCH);
+  let jointCount = 0;
+  for (const skin of skins) {
+    if (!Array.isArray(skin?.joints) || !skin.joints.length || skin.joints.length > nodes.length ||
+        new Set(skin.joints).size !== skin.joints.length) throw Error(RIG_MISMATCH);
+    jointCount += skin.joints.length;
+    if (jointCount * 16 > MAX_CURVE_VALUES) throw Error(RIG_MISMATCH);
+    for (const index of skin.joints) joints.add(index);
+    if (skin.skeleton !== undefined) joints.add(skin.skeleton);
+  }
+  return {asset,nodes,active,parents,names,joints,skins,bindMatrices:new Map()};
+}
+
+function rigLineage(rig,index) {
+  const lineage = [];
+  while (index !== undefined) {
+    if (!rig.active.has(index) || lineage.length > PREVIEW_LIMITS.depth) throw Error(RIG_MISMATCH);
+    lineage.push(index);
+    index = rig.parents.get(index);
+  }
+  return lineage;
+}
+
+function bindingPath(rig,index,other,animated) {
+  return rigLineage(rig,index).flatMap(ancestor => {
+    const node = rig.nodes[ancestor];
+    const name = node.name;
+    const rest = JSON.stringify(node.matrix ?? nodeRest(node));
+    const neutral = rest === IDENTITY_REST || rest === IDENTITY_MATRIX;
+    // An unmatched static identity helper cannot change an animated descendant's local frame.
+    if (ancestor !== index && !other.names.has(name) && neutral && !animated.has(ancestor) &&
+        !rig.joints.has(ancestor) && node.mesh === undefined && node.skin === undefined) return [];
+    if (rig.names.get(name) !== ancestor || !Number.isSafeInteger(other.names.get(name))) throw Error(RIG_MISMATCH);
+    return [[name,rest]];
   });
+}
+
+function affectedSkinSignatures(rig,other,animated) {
+  const skinnedNodes = new Set([...animated].map(index => rig.nodes[index].skin));
+  const affected = new Set(animated);
+  const remaining = [...animated];
+  while (remaining.length) {
+    for (const child of rig.nodes[remaining.pop()].children || []) {
+      if (affected.has(child)) continue;
+      affected.add(child);
+      remaining.push(child);
+    }
+  }
+  const signatures = new Set();
+  for (const [index,skin] of rig.skins.entries()) {
+    if (!skinnedNodes.has(index) && !skin.joints.some(joint => affected.has(joint))) continue;
+    if (!rig.bindMatrices.has(index)) {
+      const matrices = skin.inverseBindMatrices === undefined ? null
+        : accessorRows(rig.asset,skin.inverseBindMatrices,'MAT4',16);
+      if (matrices && matrices.length < skin.joints.length) throw Error(RIG_MISMATCH);
+      rig.bindMatrices.set(index,matrices);
+    }
+    const matrices = rig.bindMatrices.get(index);
+    const members = skin.joints.map((joint,row) => JSON.stringify([
+      bindingPath(rig,joint,other,animated),matrices?.[row] ?? null
+    ]));
+    const anchor = skin.skeleton === undefined ? null : bindingPath(rig,skin.skeleton,other,animated);
+    signatures.add(JSON.stringify([anchor,members.sort()]));
+  }
+  return [...signatures].sort();
+}
+
+function rebindExternalTracks(source,target,tracks) {
+  const sourceAnimated = new Set(tracks.map(track => track.node));
+  const renamed = tracks.map(track => {
+    const name = source.nodes[track.node].name;
+    const node = target.names.get(name);
+    if (!Number.isSafeInteger(node) || target.nodes[node].matrix || source.names.get(name) !== track.node) {
+      throw Error(RIG_MISMATCH);
+    }
+    return {...track,node};
+  });
+  const targetAnimated = new Set(renamed.map(track => track.node));
+  const sourcePaths = [...sourceAnimated].map(node => bindingPath(source,node,target,sourceAnimated));
+  const targetPaths = [...targetAnimated].map(node => bindingPath(target,node,source,targetAnimated));
+  if (JSON.stringify(sourcePaths) !== JSON.stringify(targetPaths) ||
+      JSON.stringify(affectedSkinSignatures(source,target,sourceAnimated)) !==
+      JSON.stringify(affectedSkinSignatures(target,source,targetAnimated))) throw Error(RIG_MISMATCH);
+  return renamed;
 }
 
 function appendFloats(document,builder,rows,type, bounds) {
@@ -302,7 +393,7 @@ function createAnimationSidecar(asset,clips,warnings) {
   return {schemaVersion:1,coordinateSystem:'glTF',sourceId,nodes:[...nodes.values()],clips:result};
 }
 
-export function prepareModel(input, {texture, clips, extraClips = []} = {}) {
+export function prepareModel(input, {texture, textures, clips, extraClips = [], validatePreview = true} = {}) {
   const asset = unpackGLB(input);
   const {document,binary} = asset;
   const native = document.animations || [];
@@ -312,17 +403,23 @@ export function prepareModel(input, {texture, clips, extraClips = []} = {}) {
       !Array.isArray(extraClips) || extraClips.length > 32 || indices.length + extraClips.length > 1024) {
     throw Error('动画选择无效或超出支持范围');
   }
-  let changed = Boolean(texture) || clips !== undefined || extraClips.length > 0;
+  const replacements = textures ?? (texture ? [texture] : []);
+  if ((texture && textures !== undefined) || !Array.isArray(replacements) ||
+      replacements.length > PREVIEW_LIMITS.materials ||
+      new Set(replacements.map(entry => entry?.materialIndex)).size !== replacements.length) {
+    throw Error('所选贴图材质槽重复或无效');
+  }
+  let changed = replacements.length > 0 || clips !== undefined || extraClips.length > 0;
   const builder = binaryBuilder(document,binary);
-  if (texture) replaceTexture(document,builder,texture);
+  for (const replacement of replacements) replaceTexture(document,builder,replacement);
   const selected = indices.map(index => ({clip:native[index],label:native[index].name || `动画 ${index + 1}`}));
   if (extraClips.length) {
-    const targetRig = rigSignature(asset);
+    const targetRig = rigLayout(asset);
     for (const entry of extraClips) {
       const external = unpackGLB(entry?.bytes);
-      if (rigSignature(external) !== targetRig) throw Error('外部动画与当前模型的节点或骨架绑定不同');
       const clip = Number.isSafeInteger(entry.index) && external.document.animations?.[entry.index];
-      const tracks = readClip(external,clip);
+      const tracks = rebindExternalTracks(rigLayout(external),targetRig,readClip(external,clip));
+      if (!tracks.some(track => track.times.at(-1) > 0)) throw Error('外部动画没有可播放的时间范围');
       asset.curveValues += external.curveValues;
       if (asset.curveValues > MAX_CURVE_VALUES) throw Error('动画曲线超出处理容量');
       const label = clip.name || `外部动画 ${entry.index + 1}`;
@@ -330,7 +427,7 @@ export function prepareModel(input, {texture, clips, extraClips = []} = {}) {
     }
   }
   const warnings = [];
-  const animationData = createAnimationSidecar(asset,selected,warnings);
+  const animationData = validatePreview ? createAnimationSidecar(asset,selected,warnings) : null;
   const authoredNames = new Set(selected.map(entry => entry.clip.name).filter(Boolean));
   const usedNames = new Set();
   for (const entry of selected) {
@@ -352,7 +449,7 @@ export function prepareModel(input, {texture, clips, extraClips = []} = {}) {
     else delete document.animations;
   }
   const bytes = changed ? packGLB(document,builder.finish(),asset.extraChunks) : new Uint8Array(asset.bytes);
-  const geometry = parseGLB(bytes);
+  const geometry = parseGLB(bytes,{validatePreviewImages:validatePreview});
   if (!animationData) return {bytes,animationData:null,defaultClipName,warnings};
   const evaluated = createSourceAnimation(geometry,animationData);
   const playable = new Set(evaluated.clips.map(clip => clip.id));

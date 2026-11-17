@@ -47,11 +47,13 @@ modelUrl 相对项目资源根，例如 `assets/models/example.glb`。资源 URL
 
 物件或技术资源可以用 `variants` 声明多个模型版本。每个版本使用唯一的 `id`、显示用的 `label` 和自己的 `modelUrl`，可附 `triangleCount`、`vertexCount`、`materialCount`、`textureCount` 及 `assetIds`。不共用同一个模型文件的版本须分别登记组成引用。详情加载成功后优先显示当前文件解析出的模型规格。目录只列出登记了 GLB 的物件；仅元数据的记录可以继续用 `metadataUrl` 作为模型的关联资料。
 
-物件或具体版本可通过 `downloadOptions` 声明可替换的底色贴图和可追加的外部动作。只有与物件默认模型共用文件的版本能沿用物件的选项。各项的 `url` 使用已登记项目资源根，`materialIndex` 是 GLB 的材质索引，`index` 是动作来源 GLB 的片段索引。
+物件或具体版本的 `modelUrl` 指向网页预览用 GLB。可用 `sourceModelUrl` 指向同一模型的原分辨率 GLB，用于直接下载与选配导出。两份 GLB 需对应同一份材质和动画列表，保留材质、节点和动画的索引。可以登记 `sourceModelSha256`，选配导出时用它核对原文件，目录导入工具会自动登记。省略 `sourceModelUrl` 时两处共用 `modelUrl`。
+
+物件或具体版本可通过 `downloadOptions` 声明可替换的底色贴图和可追加的外部动作。与物件共用预览和原始模型的版本可沿用物件的选项。各项的 `url` 使用已登记项目资源根。`materialIndex` 是 GLB 的材质索引，各材质槽可选一张替换贴图。贴图可选填 `sourceTextureUrl` 指向导出用原图。`index` 是动作来源 GLB 的片段索引。
 
 ```json
 {
-  "textures": [{"id":"blue-wood","label":"蓝色木纹","url":"assets/wood-blue.png","materialIndex":0}],
+  "textures": [{"id":"blue-wood","label":"蓝色木纹","url":"assets/wood-blue-preview.png","sourceTextureUrl":"assets/wood-blue.png","materialIndex":0}],
   "motions": [{"id":"sway","label":"轻微摇摆","url":"assets/crate-sway.glb","index":0}]
 }
 ```

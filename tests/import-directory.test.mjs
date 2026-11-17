@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
-import {gzipSync} from 'node:zlib';
+import {deflateSync,gzipSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
 import {createServer} from 'node:net';
 import {runInNewContext} from 'node:vm';
 import path from 'node:path';
@@ -20,6 +21,107 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const cube=fs.readFileSync(path.join(root,'apps/reviewer/demo-a/assets/cube.glb'));
 function setup() { const dir=fs.mkdtempSync(path.join(os.tmpdir(),'directory-import-'));const source=path.join(dir,'source');fs.mkdirSync(source);return {dir,source,output:path.join(dir,'out'),id:'my-library'}; }
 function clean(x){fs.rmSync(x.dir,{recursive:true,force:true});}
+
+function largeTextureModel({protectImageBuffer=false,imageCount=9,optionalExtension=false}={}) {
+ const imageSize=2048;
+ function pngChunk(type, data) {
+  const content=Buffer.concat([Buffer.from(type),data]);
+  const result=Buffer.alloc(data.length+12);
+  result.writeUInt32BE(data.length);
+  content.copy(result,4);
+  let crc=0xffffffff;
+  for(const byte of content) {
+   crc^=byte;
+   for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);
+  }
+  result.writeUInt32BE((crc^0xffffffff)>>>0,result.length-4);
+  return result;
+ }
+ const ihdr=Buffer.alloc(13);
+ ihdr.writeUInt32BE(imageSize,0);
+ ihdr.writeUInt32BE(imageSize,4);
+ ihdr[8]=8;
+ const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),pngChunk('IHDR',ihdr),
+  pngChunk('IDAT',deflateSync(Buffer.alloc((imageSize+1)*imageSize))),pngChunk('IEND',Buffer.alloc(0))]);
+ const size=cube.readUInt32LE(12);
+ const document=JSON.parse(cube.subarray(20,20+size));
+ const binary=cube.subarray(28+size);
+ const imageView=document.bufferViews.length;
+ document.bufferViews.push({buffer:0,byteOffset:binary.length,byteLength:png.length});
+ document.images=Array.from({length:imageCount},()=>({bufferView:imageView,mimeType:'image/png'}));
+ if(protectImageBuffer)document.accessors.push({bufferView:imageView,componentType:5121,count:1,type:'SCALAR'});
+ if(optionalExtension) {
+  document.extensionsUsed=['EXT_test_opaque_payload','KHR_materials_clearcoat','KHR_materials_unlit'];
+  document.extensionsRequired=['KHR_materials_unlit'];
+  document.materials[0].extensions={
+   EXT_test_opaque_payload:{bufferView:imageView},
+   KHR_materials_clearcoat:{clearcoatFactor:0.2},
+   KHR_materials_unlit:{}
+  };
+  document.extras={extensions:{userMetadata:{enabled:true}}};
+ }
+ document.buffers[0].byteLength=binary.length+png.length;
+ const json=Buffer.from(JSON.stringify(document));
+ const paddedJson=Buffer.concat([json,Buffer.alloc((4-json.length%4)%4,32)]);
+ const paddedBin=Buffer.concat([binary,png,Buffer.alloc((4-png.length%4)%4)]);
+ const header=Buffer.alloc(20),binHeader=Buffer.alloc(8);
+ header.writeUInt32LE(0x46546c67,0);
+ header.writeUInt32LE(2,4);
+ header.writeUInt32LE(28+paddedJson.length+paddedBin.length,8);
+ header.writeUInt32LE(paddedJson.length,12);
+ header.writeUInt32LE(0x4e4f534a,16);
+ binHeader.writeUInt32LE(paddedBin.length,0);
+ binHeader.writeUInt32LE(0x004e4942,4);
+ return {bytes:Buffer.concat([header,paddedJson,binHeader,paddedBin]),imageView,png};
+}
+
+test('large textures generate a separate lean preview while preserving original GLBs and shared image views',t=>{
+ const commands=process.platform==='win32'?['python','py']:['python3','python'];
+ if(!commands.some(cmd=>spawnSync(cmd,['-E','-B','-c','from PIL import Image; Image.Resampling.LANCZOS'],{windowsHide:true}).status===0)){
+  t.skip('preview conversion requires Python with Pillow');return;
+ }
+ const x=setup();
+ try {
+  const fixtures=new Map([
+   ['image-only',largeTextureModel()],
+   ['also-used',largeTextureModel({protectImageBuffer:true})],
+   ['within-budget',largeTextureModel({imageCount:1})],
+   ['optional-extension',largeTextureModel({optionalExtension:true})]
+  ]);
+  for(const [name,{bytes}] of fixtures) {
+   fs.writeFileSync(path.join(x.source,name+'.glb'),bytes);
+   if(name==='within-budget')assert.equal(parseGLB(bytes).images[0].width,2048);
+   else assert.throws(()=>parseGLB(bytes),/aggregate image pixels/);
+   assert.equal(parseGLB(bytes,{validatePreviewImages:false}).images[0].width,2048);
+  }
+  const report=importDirectory(x);
+  assert.equal(report.models,fixtures.size);
+  assert(report.warnings.includes('optional-extension.glb: Unsupported optional extension: EXT_test_opaque_payload'));
+  const library=path.join(x.output,'library');
+  const catalog=JSON.parse(fs.readFileSync(path.join(library,'assets/objects-catalog.json')));
+  for(const item of catalog.objects) {
+   const {bytes,imageView,png}=fixtures.get(item.name);
+   const preview=fs.readFileSync(path.join(library,item.modelUrl));
+   const jsonLength=preview.readUInt32LE(12);
+   const metadata=JSON.parse(preview.subarray(20,20+jsonLength));
+   assert.deepEqual(fs.readFileSync(path.join(library,item.sourceModelUrl)),bytes);
+   assert.equal(item.sourceModelSha256,createHash('sha256').update(bytes).digest('hex'));
+   assert.equal(parseGLB(preview).images[0].width,1024);
+   const resizedView=metadata.images[0].bufferView;
+   assert(metadata.images.every(image=>image.bufferView===resizedView));
+   assert.equal(preview.includes(png),item.name==='also-used');
+   if(item.name==='also-used')assert.notEqual(resizedView,imageView);
+   else assert.ok(preview.length<bytes.length);
+   if(item.name==='optional-extension') {
+    assert.deepEqual(metadata.extensionsUsed,['KHR_materials_clearcoat','KHR_materials_unlit']);
+    assert.deepEqual(metadata.extensionsRequired,['KHR_materials_unlit']);
+    assert.deepEqual(metadata.materials[0].extensions,{KHR_materials_clearcoat:{clearcoatFactor:0.2},KHR_materials_unlit:{}});
+    assert.deepEqual(metadata.extras,{extensions:{userMetadata:{enabled:true}}});
+   }
+  }
+ }finally{clean(x);}
+});
+
 test('standalone imported workspace loads through real HTTP, loader, adapter and parser',async()=>{
  const x=setup();let server;
  try {

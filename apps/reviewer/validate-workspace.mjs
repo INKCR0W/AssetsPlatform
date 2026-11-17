@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {createJSONBudget,readBoundedJSON} from './shared/json-budget.mjs';
 import {validateResourceReference} from './shared/resource-url.mjs';
 import {fileURLToPath} from 'node:url';
@@ -57,7 +58,24 @@ try {
   const modelURLs=new Set(modelsByItem.filter(Boolean).map(url=>project.config.resourceResolver.resolve(url)));
   const models=[];
   for(const url of modelURLs){const g=parseGLB(read(url,PREVIEW_LIMITS.downloadBytes));models.push({path:new URL(url).pathname,vertexCount:g.vertices,triangleCount:g.triangles,warnings:g.warnings});}
-  results.push({projectId:entry.id,datasetId:project.config.datasetId,resources:data.catalog.assets.length,objects:objects.length,models});
+  const sources=new Map();
+  for(const item of items.flatMap(item=>[item,...(Array.isArray(item.variants)?item.variants:[])])){
+   if(!item?.sourceModelUrl)continue;
+   const url=project.config.resourceResolver.resolve(item.sourceModelUrl),digest=item.sourceModelSha256;
+   if(digest!==undefined&&(typeof digest!=='string'||!/^[0-9a-f]{64}$/.test(digest)||sources.get(url)&&sources.get(url)!==digest)){
+    throw Error('Invalid or conflicting original model SHA-256: '+url);
+   }
+   if(!sources.has(url)||digest!==undefined)sources.set(url,digest);
+  }
+  const sourceModels=[];
+  for(const [url,digest] of sources) {
+   const bytes=read(url,PREVIEW_LIMITS.downloadBytes);
+   if(digest&&createHash('sha256').update(bytes).digest('hex')!==digest)throw Error('Original model SHA-256 mismatch: '+url);
+   parseGLB(bytes,{validatePreviewImages:false});
+   sourceModels.push(new URL(url).pathname);
+  }
+  results.push({projectId:entry.id,datasetId:project.config.datasetId,resources:data.catalog.assets.length,
+   objects:objects.length,models,...(sourceModels.length?{sourceModels}:{})});
  }
  if(!results.length)throw Error('No projects registered');
  console.log(JSON.stringify({passed:true,scope:'registered indexed catalogs and referenced GLB CPU parsing',gpu:'not-verified',browserOpenability:'not-verified',jsonBudgetScope:'independent offline 16 MiB/file and 64 MiB/aggregate raw and decoded; browser descriptor 2 MiB/file and 16 MiB/bootstrap enforced; per-project browser data limits not verified',projects:results},null,2));

@@ -44,13 +44,106 @@ function own(object, key) {
 
 function describe(row) {
   const clips = row.motionLabels.length ? row.motionLabels.join('、') : '无动画';
-  return [row.version.label, row.texture?.label || '原材质', clips].join(' / ');
+  const textures = row.textures.map(texture => `${texture.materialLabel} · ${texture.label}`);
+  return [row.version.label, textures.join('、') || '原材质', clips].join(' / ');
 }
 
 async function readAsset(url, limit, signal) {
   const response = await fetch(url, {signal, redirect: 'error'});
   if (!response.ok) throw Error(`读取资源失败（${response.status}）`);
   return readBoundedResponse(response, limit);
+}
+
+function originalUrl(asset) {
+  return asset.sourceUrl || asset.url;
+}
+
+function sharesPreviewSource(asset) {
+  return originalUrl(asset) === asset.url;
+}
+
+async function verifyContentHash(bytes, expected, message) {
+  if (expected && await modelContentHash(bytes) !== expected) throw Error(message);
+}
+
+async function readConfigurationAssets(model, textures, motions, {signal, original = false, approvedSources}) {
+  let available = MAX_CART_BYTES - model.byteLength;
+  async function readPart(url, limit) {
+    if (available <= 0) throw Error('配置使用的资源文件过大');
+    const bytes = await readAsset(url, Math.min(limit, available), signal);
+    available -= bytes.byteLength;
+    return bytes;
+  }
+
+  const textureData = [];
+  for (const [index, texture] of textures.entries()) {
+    const url = original ? originalUrl(texture) : texture.url;
+    const mimeType = original ? texture.sourceMimeType || texture.mimeType : texture.mimeType;
+    const limit = original ? PREVIEW_LIMITS.imageBytes : TEXTURE_BYTES;
+    const bytes = await readPart(url, limit);
+    await verifyContentHash(bytes, approvedSources?.textures[index], `贴图「${texture.label}」已更新，请重新预览并保存配置`);
+    textureData.push({bytes, mimeType, materialIndex:texture.materialIndex});
+  }
+
+  const extraClips = [];
+  for (const [index, clip] of motions.entries()) {
+    const url = original ? originalUrl(clip) : clip.url;
+    const bytes = await readPart(url, PREVIEW_LIMITS.downloadBytes);
+    await verifyContentHash(bytes, approvedSources?.motions[index], `外部动作「${clip.label}」已更新，请重新预览并保存配置`);
+    extraClips.push({bytes, index:clip.index});
+  }
+  return {textures:textureData, extraClips};
+}
+
+async function approveSharedInputs({version, model, textures, motions, ingredients}, signal) {
+  async function hashShared(assets, data) {
+    const hashes = [];
+    for (const [index, asset] of assets.entries()) {
+      signal.throwIfAborted();
+      hashes.push(sharesPreviewSource(asset) ? await modelContentHash(data[index].bytes) : null);
+    }
+    return hashes;
+  }
+  return {
+    model:sharesPreviewSource(version) ? await modelContentHash(model) : null,
+    textures:await hashShared(textures, ingredients.textures),
+    motions:await hashShared(motions, ingredients.extraClips)
+  };
+}
+
+function verifyOriginalSelection(model, row) {
+  const {materials, clips} = inspectModel(model);
+  if (row.textures.some(texture => materials[texture.materialIndex]?.label !== texture.materialLabel) ||
+      row.nativeClips.some(clip => clips[clip.index]?.label !== clip.label)) {
+    throw Error('原始模型的材质或动画与网页预览不一致');
+  }
+}
+
+async function prepareOriginalModel(row, available, signal) {
+  const model = await readAsset(originalUrl(row.version), Math.min(PREVIEW_LIMITS.downloadBytes, available), signal);
+  await verifyContentHash(model, row.approvedSources.model || row.version.sourceSha256,
+    '原始模型内容与已确认的版本不一致，请检查入库记录或重新预览');
+  signal.throwIfAborted();
+  verifyOriginalSelection(model, row);
+  const ingredients = await readConfigurationAssets(model, row.textures, row.motions, {
+    signal, original:true, approvedSources:row.approvedSources
+  });
+  signal.throwIfAborted();
+  const prepared = prepareModel(model, {
+    ...ingredients, clips:row.nativeClips.map(clip => clip.index), validatePreview:false
+  });
+  if (prepared.defaultClipName !== row.defaultClipName) throw Error('原始模型的默认动画与网页预览不一致');
+  return prepared.bytes;
+}
+
+async function prepareExport(row, available, signal) {
+  if (available <= 0) throw Error('清单中的原始模型过大，请分批下载');
+  const bytes = row.approvedBytes || await prepareOriginalModel(row, available, signal);
+  if (bytes.byteLength > available) throw Error('清单中的原始模型过大，请分批下载');
+  const [modelSha256, defaultClipNameSha256] = await Promise.all([
+    modelContentHash(bytes), animationNameHash(row.defaultClipName)
+  ]);
+  return {...row, bytes, modelSha256, defaultClipNameSha256};
 }
 
 function createDialogs() {
@@ -74,7 +167,8 @@ function createDialogs() {
         </section>
         <div class="workbench-options">
           <label class="workbench-field">模型版本 <select data-wb="version"></select></label>
-          <label class="workbench-field" data-wb="texture-row">贴图 <select data-wb="texture"></select></label>
+          <fieldset data-wb="texture-row" hidden><legend>底色贴图</legend>
+            <div class="workbench-texture-slots" data-wb="texture-slots"></div></fieldset>
           <fieldset><legend>动画</legend><div class="workbench-clips" data-wb="clips"></div></fieldset>
           <section class="workbench-team" aria-label="投票、标签与评论">
             <div class="workbench-team-heading"><h3>版本评阅</h3>
@@ -132,6 +226,7 @@ export function mountDownloadWorkbench({
   const rows = [];
   let dialogs, selected, sequence = 0, viewer, frame = 0, previewAbort, versionAbort;
   let snapshot, teamBusy = false, teamError = '';
+  let downloadAbort;
   let disposed = false;
   const get = key => (dialogs.editor.querySelector(`[data-wb="${key}"]`) ||
     dialogs.cart.querySelector(`[data-wb="${key}"]`));
@@ -299,7 +394,11 @@ export function mountDownloadWorkbench({
       stopPreview();
       selected = undefined;
     });
-    get('close-cart').onclick = () => dialogs.cart.close();
+    get('close-cart').onclick = () => {
+      downloadAbort?.abort();
+      dialogs.cart.close();
+    };
+    dialogs.cart.addEventListener('cancel', () => downloadAbort?.abort());
     get('open-cart').onclick = openCart;
     get('download').onclick = download;
     get('add').onclick = keepConfiguration;
@@ -309,23 +408,38 @@ export function mountDownloadWorkbench({
       viewer?.resetAnimation?.();
     };
     get('version').onchange = () => loadVersion(selected.asset.versions.find(version => version.id === get('version').value));
-    get('texture').onchange = () => {
-      selected.textureId = get('texture').value;
-      refreshPreview();
-    };
     bindTeam();
   }
 
-  function renderIngredients() {
-    const {version, textureId, clips, extraIds, inspected} = selected;
-    const materials = inspected?.materials || [];
-    const textures = (version.textures || []).filter(texture => materials.some(slot => slot.index === texture.materialIndex));
-    get('texture-row').hidden = textures.length === 0;
-    get('texture').replaceChildren(option('', '原贴图'), ...textures.map(texture => {
-      const slot = materials.find(material => material.index === texture.materialIndex);
-      return option(texture.id, `${texture.label} · ${slot.label}`);
+  function renderTextureSlots(materials, textures, textureIds) {
+    const slots = new Map();
+    for (const texture of textures) {
+      const slot = materials[texture.materialIndex];
+      if (!slot) continue;
+      if (!slots.has(slot)) slots.set(slot, []);
+      slots.get(slot).push(texture);
+    }
+    get('texture-row').hidden = slots.size === 0;
+    get('texture-slots').replaceChildren(...Array.from(slots, ([slot, options]) => {
+      const label = el('label', undefined, 'workbench-field workbench-texture-slot');
+      const select = el('select');
+      select.dataset.wb = 'texture';
+      select.dataset.materialIndex = slot.index;
+      select.append(option('', '原贴图'), ...options.map(texture => option(texture.id, texture.label)));
+      select.value = textureIds.get(slot.index) || '';
+      select.onchange = () => {
+        if (select.value) textureIds.set(slot.index, select.value);
+        else textureIds.delete(slot.index);
+        refreshPreview();
+      };
+      label.append(el('span', slot.label), select);
+      return label;
     }));
-    get('texture').value = textureId;
+  }
+
+  function renderIngredients() {
+    const {version, textureIds, clips, extraIds, inspected} = selected;
+    renderTextureSlots(inspected?.materials || [], version.textures || [], textureIds);
     const choices = [
       ...(inspected?.clips || []).map(clip => checkOption(clip.label, clips.has(clip.index), checked => {
         if (checked) clips.add(clip.index);
@@ -349,7 +463,8 @@ export function mountDownloadWorkbench({
     versionAbort = controller;
     Object.assign(selected, {
       version, model: undefined, inspected: undefined, prepared: undefined,
-      textureId: row?.texture?.id || '', clips: new Set(), extraIds: new Set(row?.extraIds || [])
+      textureIds: new Map(row?.textures.map(texture => [texture.materialIndex, texture.id])),
+      clips: new Set(), extraIds: new Set(row?.motions.map(clip => clip.id))
     });
     get('version').value = version.id;
     get('add').disabled = true;
@@ -358,16 +473,20 @@ export function mountDownloadWorkbench({
     get('play-controls').hidden = true;
     get('stage').replaceChildren();
     get('texture-row').hidden = true;
+    get('texture-slots').replaceChildren();
     get('clips').replaceChildren();
     get('comment').value = '';
     renderTeam();
     try {
       const bytes = await readAsset(version.url, PREVIEW_LIMITS.downloadBytes, controller.signal);
+      if (sharesPreviewSource(version)) {
+        await verifyContentHash(bytes, version.sourceSha256, '模型内容与入库记录不一致');
+      }
       if (controller.signal.aborted) return;
       const inspected = inspectModel(bytes);
       selected.model = bytes;
       selected.inspected = inspected;
-      selected.clips = new Set(row?.clips ?? inspected.clips.map(clip => clip.index));
+      selected.clips = new Set((row?.nativeClips ?? inspected.clips).map(clip => clip.index));
       renderIngredients();
       await refreshPreview();
     } catch (error) {
@@ -382,8 +501,10 @@ export function mountDownloadWorkbench({
     const choice = selected;
     const controller = new AbortController();
     previewAbort = controller;
-    const {version, model, inspected, textureId, clips, extraIds} = choice;
-    const texture = (version.textures || []).find(entry => entry.id === textureId);
+    const {version, model, inspected, textureIds, clips, extraIds} = choice;
+    const textures = (version.textures || [])
+      .filter(texture => textureIds.get(texture.materialIndex) === texture.id)
+      .map(texture => ({...texture, materialLabel:inspected.materials[texture.materialIndex].label}));
     const selectedMotions = (version.motions || []).filter(clip => extraIds.has(clip.id));
     const native = inspected.clips.filter(clip => clips.has(clip.index));
     choice.prepared = undefined;
@@ -393,24 +514,13 @@ export function mountDownloadWorkbench({
     get('preview-status').textContent = '正在准备预览…';
     try {
       if (selectedMotions.length > MAX_EXTRA_CLIPS) throw Error(`每份配置最多可添加 ${MAX_EXTRA_CLIPS} 个外部动作`);
-      const textureData = texture && {
-        bytes:await readAsset(texture.url, TEXTURE_BYTES, controller.signal),
-        mimeType:texture.mimeType, materialIndex:texture.materialIndex
-      };
-      const extraClips = [];
-      let used = model.byteLength + (textureData?.bytes.byteLength || 0);
-      for (const clip of selectedMotions) {
-        const limit = Math.min(PREVIEW_LIMITS.downloadBytes, MAX_CART_BYTES - used);
-        if (limit <= 0) throw Error('配置使用的资源文件过大');
-        const bytes = await readAsset(clip.url, limit, controller.signal);
-        used += bytes.byteLength;
-        extraClips.push({bytes, index:clip.index});
-      }
+      const ingredients = await readConfigurationAssets(model, textures, selectedMotions, {signal:controller.signal});
       if (controller.signal.aborted) return;
-      const prepared = prepareModel(model, {texture:textureData, clips:native.map(clip => clip.index), extraClips});
-      const [modelSha256, defaultClipNameSha256] = await Promise.all([
-        modelContentHash(prepared.bytes), animationNameHash(prepared.defaultClipName)
-      ]);
+      const prepared = prepareModel(model, {...ingredients, clips:native.map(clip => clip.index)});
+      const hasSeparateSource = !sharesPreviewSource(version) ||
+        textures.some(texture => !sharesPreviewSource(texture)) || selectedMotions.some(clip => !sharesPreviewSource(clip));
+      const approvedSources = hasSeparateSource
+        ? await approveSharedInputs({version, model, textures, motions:selectedMotions, ingredients}, controller.signal) : null;
       if (controller.signal.aborted) return;
       const next = await createViewer(get('stage'), prepared.bytes, {
         signal:controller.signal, animationData:prepared.animationData, camera
@@ -418,16 +528,17 @@ export function mountDownloadWorkbench({
       if (controller.signal.aborted) { next.dispose(); return; }
       viewer = next;
       choice.prepared = {
-        asset:choice.asset, version, bytes:prepared.bytes, modelSha256, texture,
-        defaultClipName:prepared.defaultClipName, defaultClipNameSha256,
-        clips:native.map(clip => clip.index), extraIds:selectedMotions.map(clip => clip.id),
+        asset:choice.asset, version, textures, motions:selectedMotions, nativeClips:native,
+        approvedSources, approvedBytes:hasSeparateSource ? null : prepared.bytes,
+        previewByteLength:prepared.bytes.byteLength, defaultClipName:prepared.defaultClipName,
         motionLabels:[...native.map(clip => clip.label), ...selectedMotions.map(clip => clip.label)]
       };
       const playable = viewer.getAnimationClips?.() || [];
       get('play-clip').replaceChildren(...playable.map(clip => option(clip.id, clip.name || clip.id)));
       get('play-controls').hidden = !playable.length;
-      const warning = (prepared.warnings || []).join('；');
-      get('preview-status').textContent = warning || describe(choice.prepared);
+      const warnings = [...new Set([...(prepared.warnings || []), ...(viewer.warnings || [])])];
+      if (hasSeparateSource) warnings.unshift('网页使用轻量预览，下载使用原分辨率');
+      get('preview-status').textContent = warnings.join('；') || describe(choice.prepared);
       get('add').disabled = false;
     } catch (error) {
       if (!controller.signal.aborted) get('preview-status').textContent = `无法预览配置：${error.message}`;
@@ -468,7 +579,7 @@ export function mountDownloadWorkbench({
     const prepared = selected?.prepared;
     if (!prepared) return;
     const index = rows.findIndex(row => row.id === selected.rowId);
-    const total = rows.reduce((sum, row, i) => sum + (i === index ? 0 : row.bytes.byteLength), prepared.bytes.byteLength);
+    const total = rows.reduce((sum, row, i) => sum + (i === index ? 0 : row.previewByteLength), prepared.previewByteLength);
     if (index < 0 && rows.length >= MAX_ITEMS || total > MAX_CART_BYTES) {
       get('add-status').textContent = '清单容量已达上限，请分批下载';
       return;
@@ -485,7 +596,7 @@ export function mountDownloadWorkbench({
     if (!dialogs) return;
     get('open-cart').textContent = `待下载（${rows.length}）`;
     get('cart-status').textContent = rows.length ? `${rows.length} 项配置` : '清单为空';
-    get('download').disabled = rows.length === 0;
+    get('download').disabled = rows.length === 0 || Boolean(downloadAbort);
     get('cart-rows').replaceChildren(...rows.map(row => {
       const item = el('article', undefined, 'workbench-cart-row');
       const summary = el('div');
@@ -502,6 +613,7 @@ export function mountDownloadWorkbench({
         }
         renderCart();
       }));
+      if (downloadAbort) for (const action of actions.children) action.disabled = true;
       item.append(summary, actions);
       return item;
     }));
@@ -518,18 +630,39 @@ export function mountDownloadWorkbench({
     if (!dialogs.cart.open) dialogs.cart.showModal();
   }
 
-  function download() {
-    if (!rows.length) return;
+  async function download() {
+    if (!rows.length || downloadAbort) return;
+    const controller = new AbortController();
+    downloadAbort = controller;
+    renderCart();
+    const queued = rows.slice();
+    const packed = [];
+    let used = 0;
+    let result;
     try {
-      const url = URL.createObjectURL(new Blob([createUnityBundle(rows, config)], {type:'application/zip'}));
+      for (const row of queued) {
+        const progress = `${packed.length + 1}/${queued.length} · ${row.asset.name}`;
+        get('cart-status').textContent = `正在组装原分辨率模型 ${progress}`;
+        const prepared = await prepareExport(row, MAX_CART_BYTES - used, controller.signal);
+        if (controller.signal.aborted || !dialogs.cart.open) return;
+        used += prepared.bytes.byteLength;
+        packed.push(prepared);
+      }
+      const url = URL.createObjectURL(new Blob([createUnityBundle(packed, config)], {type:'application/zip'}));
       const link = el('a');
       link.href = url;
       link.download = 'unity-assets.zip';
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      get('cart-status').textContent = `已生成 ${rows.length} 项配置的 ZIP`;
+      result = `已生成 ${packed.length} 项配置的 ZIP`;
     } catch (error) {
-      get('cart-status').textContent = `打包失败：${error.message}`;
+      if (!controller.signal.aborted) result = `打包失败：${error.message}`;
+    } finally {
+      downloadAbort = undefined;
+      if (!disposed) {
+        renderCart();
+        if (result) get('cart-status').textContent = result;
+      }
     }
   }
 
@@ -540,6 +673,7 @@ export function mountDownloadWorkbench({
       disposed = true;
       stopPreview();
       versionAbort?.abort();
+      downloadAbort?.abort();
       selected = undefined;
       rows.length = 0;
       dialogs?.editor.remove();
