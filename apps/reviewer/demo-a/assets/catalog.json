@@ -7,6 +7,49 @@
       "type": "mesh",
       "category": "demo",
       "modelUrl": "assets/cube.glb"
+    },
+    {
+      "id": "mesh-demo-crate-standard",
+      "name": "木箱标准网格",
+      "type": "mesh",
+      "category": "demo",
+      "modelUrl": "assets/crate-standard.glb"
+    },
+    {
+      "id": "mesh-demo-crate-light",
+      "name": "木箱轻量网格",
+      "type": "mesh",
+      "category": "demo",
+      "modelUrl": "assets/crate-light.glb"
+    },
+    {
+      "id": "mesh-demo-locker",
+      "name": "储物柜网格",
+      "type": "mesh",
+      "category": "demo",
+      "modelUrl": "assets/storage-locker.glb"
+    },
+    {
+      "id": "texture-demo-wood",
+      "name": "原木纹贴图",
+      "type": "texture",
+      "category": "demo",
+      "previewUrl": "assets/wood-grain.png",
+      "originalUrl": "assets/wood-grain.png",
+      "format": "PNG",
+      "width": 128,
+      "height": 128
+    },
+    {
+      "id": "texture-demo-wood-blue",
+      "name": "蓝色木纹贴图",
+      "type": "texture",
+      "category": "demo",
+      "previewUrl": "assets/wood-blue.png",
+      "originalUrl": "assets/wood-blue.png",
+      "format": "PNG",
+      "width": 96,
+      "height": 96
     }
   ]
 }

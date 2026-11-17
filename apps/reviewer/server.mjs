@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=path.dirname(fileURLToPath(import.meta.url));
-const types={'.html':'text/html; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.glb':'model/gltf-binary','.svg':'image/svg+xml'};
+const types={'.html':'text/html; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.glb':'model/gltf-binary','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'};
 const port=Number(process.env.PORT||8768);
+const teamAPI = process.env.ASSETS_TEAM_CONFIG
+  ? await (await import('./team-api.mjs')).createTeamAPI({configFile:process.env.ASSETS_TEAM_CONFIG, staticRoot:root})
+  : null;
 
 function endWithStatus(res, status) {
   res.writeHead(status);
@@ -41,13 +44,17 @@ function streamFile(res, target, headers) {
 }
 
 http.createServer((req, res) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD') return endWithStatus(res, 405);
   let requested;
   try {
     requested = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   } catch {
     return endWithStatus(res, 400);
   }
+  if (requested === '/api/workbench' && teamAPI) {
+    teamAPI(req, res).catch(error => handleFileError(res, error));
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') return endWithStatus(res, 405);
   if (requested.includes('\0') || requested.split('/').some(part => part.startsWith('.'))) return endWithStatus(res, 404);
   const target = path.resolve(root, '.' + requested + (requested.endsWith('/') ? 'index.html' : ''));
   if (!target.startsWith(root + path.sep)) return endWithStatus(res, 404);

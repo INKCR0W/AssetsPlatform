@@ -18,24 +18,36 @@
       "sha256": "1e30675bc6c52626b940cccb1f757aa15791b2a5669f30dbd9a1437de663f271"
     },
     "app.mjs": {
-      "bytes": 115912,
-      "sha256": "be64b0e733ddba260f052bffe21f5a0f5b472570fc0d0046f5ca9a6cc625480a"
+      "bytes": 120125,
+      "sha256": "2024aafdedda99789047f83b1a0ada4f6e8611a933f1734ddf59e48c98fc45a4"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
       "sha256": "8583f6a31daa68a82850c3a193f5150e94c6aefc360f757ae89ed802ce0f5acd"
     },
     "demo-a/assets/catalog.json": {
-      "bytes": 193,
-      "sha256": "7b43225e1eaf75e23d5951912c67e02a4878a71f351c2b2a06a3bfd207ba88d0"
+      "bytes": 1298,
+      "sha256": "156c6ddfe36ab06b064d23e3c061a5186b2f98b0712c57e0f327c50d758ffd72"
+    },
+    "demo-a/assets/crate-light.glb": {
+      "bytes": 4416,
+      "sha256": "18a422fe59b5d28151a64a9a2c5b7eea012ffc4f24594b4e1af5a4669ee25fa5"
+    },
+    "demo-a/assets/crate-standard.glb": {
+      "bytes": 19664,
+      "sha256": "9a11282d5c6fe2b580c07fd2301a271bf89656d6c815c32a34e22076af009b33"
+    },
+    "demo-a/assets/crate-sway.glb": {
+      "bytes": 19664,
+      "sha256": "f3a148e92d6fdd9d57de067d0fe97941fef387f370e387ab400257e36ec67c46"
     },
     "demo-a/assets/cube.glb": {
       "bytes": 876,
       "sha256": "5d07c7f74ff134ab5b0eefec0adb5c3d7286ad6926a0ecc906748bc3e80952fc"
     },
     "demo-a/assets/objects-catalog.json": {
-      "bytes": 289,
-      "sha256": "cfdfd3f8a00909d53fb1a5512e55c972ea8f74959ddf7cdcf0ccf95b7d78e6f5"
+      "bytes": 2183,
+      "sha256": "9b17a1a96dba49a2cb6d15172ddc60038000a16ce58c19ad99a18159caa151e9"
     },
     "demo-a/assets/preview-pending.svg": {
       "bytes": 265,
@@ -44,6 +56,18 @@
     "demo-a/assets/render-profiles.json": {
       "bytes": 20,
       "sha256": "86a995c0a15317ff3227d3f8ecc3bcefa8665abb391b4487dfbd353d5b3913e9"
+    },
+    "demo-a/assets/storage-locker.glb": {
+      "bytes": 8616,
+      "sha256": "90d52f766eaf842fea5fdffa11d2969c9559fa05b5bdf509c5fb75cd57a6f75d"
+    },
+    "demo-a/assets/wood-blue.png": {
+      "bytes": 9571,
+      "sha256": "6affd926b54994e86866a3b091beaf30b84faab1ad70e338d87a15a5112eb583"
+    },
+    "demo-a/assets/wood-grain.png": {
+      "bytes": 1855,
+      "sha256": "8754bdb1fd8eed75af1ba5a62d831b7813111e67b12e6b4712c7cb8e64b1906f"
     },
     "demo-a/project-config.json": {
       "bytes": 1100,
@@ -78,8 +102,8 @@
       "sha256": "52de92913663dd828f91423172f739583d24e219fe40a348bbe447e0c6e77cb3"
     },
     "index.html": {
-      "bytes": 17632,
-      "sha256": "5573f31dc5b24111565f6bcc719a207aed6aa0ba38d6f014b072e5dbfa832198"
+      "bytes": 18035,
+      "sha256": "73438276ddc7572a470dd01c87bb363f16ede317a5be72e534d25e45c3f89e22"
     },
     "package.json": {
       "bytes": 325,
@@ -102,16 +126,28 @@
       "sha256": "72bec27a654426c509fa958307ceffa6e7386f5b518c94ef2f158e6c8976a465"
     },
     "server.mjs": {
-      "bytes": 2666,
-      "sha256": "2cf08275dcd42922c5a7e55ac2dcc47c10e705217da8f2ea07df819059839539"
+      "bytes": 3036,
+      "sha256": "d4c08786bf216a5e2c05894182d70ab88b7f8057831e7a5ea126c2f86947cbcf"
     },
     "shared/animation-contract.mjs": {
       "bytes": 1483,
       "sha256": "e3c1cf5d9dd956da686be0ed609cbfd01fb49419ad80aa73af95a466d2c8a4d1"
     },
+    "shared/asset-package.mjs": {
+      "bytes": 21350,
+      "sha256": "2c1162502ce9954be2a9c8040ead9b340a045830b56db9de34e46ac6af87c4eb"
+    },
     "shared/common-render-profiles.mjs": {
       "bytes": 4946,
       "sha256": "3576acd7d654d80824444728fa58c65dcad26e5ed08c0131d6c6150a354d6682"
+    },
+    "shared/download-catalog.mjs": {
+      "bytes": 3330,
+      "sha256": "536556dd616a97bdbcbcaff3e6a41ad9d2cf2136f14ab4de40401cef4bb9d7ce"
+    },
+    "shared/download-workbench.mjs": {
+      "bytes": 22689,
+      "sha256": "b438732329f91a5b420c1cb57754a2d5adbc54ac3603390c5eff878ef0c1219f"
     },
     "shared/json-budget.mjs": {
       "bytes": 2812,
@@ -173,6 +209,14 @@
       "bytes": 1575,
       "sha256": "febaae60dc68adcf75e138024c439e84c455369df8715c4f31ffad182d379d47"
     },
+    "shared/team-client.mjs": {
+      "bytes": 8693,
+      "sha256": "4f0b03bd57e4a0d67672ddd284f206cbcbd31ebfff6c5b8c65478951496a1ae4"
+    },
+    "shared/unity-bundle.mjs": {
+      "bytes": 2367,
+      "sha256": "7d4b9a061ff5d31fd9680bf819ac5d03a7a1f8a65d4d71cca026f153bdb33492"
+    },
     "shared/viewer-adapter.mjs": {
       "bytes": 611,
       "sha256": "565da6cc68030e30561100f703d4709fc5a63f210b23c485c5d5866490869c29"
@@ -182,8 +226,20 @@
       "sha256": "90a09aed9a272d55a34d336977e7a15589bb273718e5d0e1688653c79d62c127"
     },
     "style.css": {
-      "bytes": 60063,
-      "sha256": "16afa83d85bba5954c6a86100578e3414e9bc3650b8d038afbd92387d9aba6f3"
+      "bytes": 61289,
+      "sha256": "c6c29824ff3c70dd1cb899fba8ba6031cd0a5f8d2849de432900b069297c30ac"
+    },
+    "team-api.mjs": {
+      "bytes": 8527,
+      "sha256": "f3f162f4713b1333a4c510ed0afd53065f6c9d55fe8a495ac9d3c7f6fcf49a7a"
+    },
+    "tests/asset-package.test.mjs": {
+      "bytes": 8086,
+      "sha256": "15964bab5b33e9954f692fe3da601b520bdacb97a5144a9f8a0645bac40013aa"
+    },
+    "tests/download-catalog.test.mjs": {
+      "bytes": 2062,
+      "sha256": "95bb773cc1c428126cd7fc4e3cec1582331c684b199a27079f5cd2a5b7079b42"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,
@@ -205,6 +261,14 @@
       "bytes": 2999,
       "sha256": "dbc297d523fb3958790abf58a73f7983348c23133a0180315e2a7e9f13efc5a6"
     },
+    "tests/team-api.test.mjs": {
+      "bytes": 7960,
+      "sha256": "ec0584badfa8c76c91decaf5f1658afbb4eee81f25f779bda7d9103e9c4143f4"
+    },
+    "tests/unity-bundle.test.mjs": {
+      "bytes": 4865,
+      "sha256": "acff9881d55ff0543aefe4aefff35a0c73c3e2e811b24aa3b4d905877c1b2827"
+    },
     "tests/workbench-actions.test.mjs": {
       "bytes": 5597,
       "sha256": "09b5e9a3bd8266cb2369590a30d0109d2d4b11558680c26b29240f3bdeaee686"
@@ -220,6 +284,10 @@
     "viewer.mjs": {
       "bytes": 86086,
       "sha256": "615a3bc23988e65153694a0530dbf61c19fcf803bb08711c0ba087cc7aa6b982"
+    },
+    "workbench.css": {
+      "bytes": 5075,
+      "sha256": "27bec9616a710358e18b184533cb4124cff8736aee23180acd2b397e1c887dc2"
     }
   }
 }

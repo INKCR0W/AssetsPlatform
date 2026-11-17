@@ -9,6 +9,78 @@
       "assetId": "mesh-demo-a",
       "assemblyStatus": "示例模型",
       "description": "自制立方体。"
+    },
+    {
+      "id": "object-demo-crate",
+      "name": "木制运输箱",
+      "category": "demo",
+      "modelUrl": "assets/crate-standard.glb",
+      "assetIds": [
+        "mesh-demo-crate-standard",
+        "texture-demo-wood"
+      ],
+      "assemblyStatus": "示例模型",
+      "description": "自制木箱，可切换标准版和轻量版，配置贴图以及标准版的动作。",
+      "tags": [
+        "自制",
+        "道具"
+      ],
+      "downloadOptions": {
+        "textures": [
+          {
+            "id": "blue-wood",
+            "label": "蓝色木纹",
+            "url": "assets/wood-blue.png",
+            "materialIndex": 0
+          }
+        ],
+        "motions": [
+          {
+            "id": "sway",
+            "label": "轻微摇摆",
+            "url": "assets/crate-sway.glb",
+            "index": 0
+          }
+        ]
+      },
+      "variants": [
+        {
+          "id": "standard",
+          "label": "标准版",
+          "modelUrl": "assets/crate-standard.glb"
+        },
+        {
+          "id": "light",
+          "label": "轻量版",
+          "modelUrl": "assets/crate-light.glb",
+          "assetIds": [
+            "mesh-demo-crate-light"
+          ],
+          "downloadOptions": {
+            "textures": [
+              {
+                "id": "blue-wood",
+                "label": "蓝色木纹",
+                "url": "assets/wood-blue.png",
+                "materialIndex": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "object-demo-locker",
+      "name": "金属储物柜",
+      "category": "demo",
+      "modelUrl": "assets/storage-locker.glb",
+      "assetId": "mesh-demo-locker",
+      "assemblyStatus": "示例模型",
+      "description": "自制储物柜，道具的默认配置可直接加入待下载清单。",
+      "tags": [
+        "自制",
+        "道具"
+      ]
     }
   ]
 }

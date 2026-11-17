@@ -14,6 +14,9 @@ import { loadProject, loadProjectData, objectCategory, assetURL } from './shared
 import { browserStorage, loadReviewState, createReviewWriter } from './shared/selection-state.mjs';
 import { configureShell as mountShell, renderEvidenceSections } from './shared/shell-controller.mjs';
 import { getResourceResolver, mapResourceData, createProjectScope } from './shared/resource-url.mjs';
+import { galleryModel, isLibraryModel, modelVariants, resolveDownloadAsset } from './shared/download-catalog.mjs';
+import { mountDownloadWorkbench } from './shared/download-workbench.mjs';
+import { createTeamClient, TeamInputError } from './shared/team-client.mjs';
 const project = await guardStartup(() => loadProject());
 const {
   config,
@@ -43,6 +46,8 @@ config.capabilities = {
 const resourceResolver = getResourceResolver(config),
   resourceScope = createProjectScope(resourceResolver),
   jsonBudget = createJSONBudget(config);
+const modelLibrary = config.dataKind === 'indexed';
+let downloadWorkbench = null, teamTag = '';
 let defaultProfiles = project.defaultProfiles;
 await guardStartup(() => configureRenderer(config));
 import { createPlaybackTimeline } from './shared/playback-timeline.mjs';
@@ -312,8 +317,9 @@ function normalizeObject(record, basesById, basesBySourceId) {
     assemblyStatus: record.assemblyStatus || '源对象静态重组'
   };
 }
-const relatedFields = ['assetIds', 'resourceIds', 'meshIds', 'materialIds', 'textureIds', 'animationIds',
-  'prefabId', 'assetId', 'meshLinks', 'materialLinks', 'textureLinks', 'animationLinks', 'components', 'links', 'relations'];
+const relatedFields = ['assetIds', 'resourceIds', 'meshIds', 'materialIds', 'textureIds', 'shaderIds', 'animationIds',
+  'prefabId', 'assetId', 'meshLinks', 'materialLinks', 'textureLinks', 'shaderLinks', 'animationLinks',
+  'components', 'links', 'relations'];
 function allRelatedIds(object) {
   if (Array.isArray(object.assetIds)) {
     const ids = new Set(object.assetIds.filter(id => resourceMap.has(id)));
@@ -339,6 +345,7 @@ function allRelatedIds(object) {
       accept(value.meshId);
       accept(value.materialId);
       accept(value.textureId);
+      accept(value.shaderId);
       accept(value.animationId);
       accept(value.materials);
       accept(value.textures);
@@ -347,13 +354,13 @@ function allRelatedIds(object) {
   };
   relatedFields.forEach(key => accept(object[key]));
   if (object.sourceId && sourceMap.has(object.sourceId)) ids.add(sourceMap.get(object.sourceId).id);
-  for (const id of [...ids]) {
+  for (const id of ids) {
     const resource = resourceMap.get(id);
-    if (resource?.type === 'material') accept(resource.textureLinks);
-  }
-  for (const id of [...ids]) {
-    const resource = resourceMap.get(id);
-    if (resource?.type === 'material') accept(resource.textureLinks);
+    if (resource?.type === 'material') {
+      accept(resource.textureLinks);
+      accept(resource.shaderLinks);
+      accept(resource.shaderIds);
+    }
   }
   return [...ids];
 }
@@ -515,6 +522,7 @@ async function init() {
     configureShell();
     buildProfiles();
     buildAudit();
+    if (modelLibrary) mountModelLibrary();
     renderNavigation();
     render();
     partnerSelections = await mountPartnerSelections({
@@ -547,7 +555,58 @@ function isObjectView() {
   return state.view === 'objects';
 }
 function activeCollection() {
-  return state.view === 'objects' ? objects : state.view === 'technical' ? activeResources() : state.view === 'selected' ? items.filter(a => selected.has(a.id)) : items.filter(a => reviewOf(a).status !== 'pending');
+  const collection = state.view === 'objects' ? objects : state.view === 'technical' ? activeResources()
+    : state.view === 'selected' ? items.filter(a => selected.has(a.id)) : items.filter(a => reviewOf(a).status !== 'pending');
+  return modelLibrary ? collection.filter(isLibraryModel) : collection;
+}
+function visibleSelection() {
+  if (!modelLibrary) return selected;
+  return new Set([...selected].filter(id => {
+    const item = itemMap.get(id);
+    return item && isLibraryModel(item);
+  }));
+}
+function libraryTags(item) {
+  return [...new Set([
+    ...(Array.isArray(item.tags) ? item.tags.filter(tag => typeof tag === 'string' && tag) : []),
+    ...(downloadWorkbench?.tagsFor(item) || [])
+  ])];
+}
+function refreshLibraryTags() {
+  const tags = new Set(objects.filter(isLibraryModel).flatMap(libraryTags));
+  if (teamTag && !tags.has(teamTag)) teamTag = '';
+  const filter = $('#team-tag-filter');
+  const options = [...tags].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  filter.replaceChildren(new Option('全部标签', ''), ...options.map(tag => new Option(tag, tag)));
+  filter.value = teamTag;
+  filter.hidden = !options.length;
+}
+function mountModelLibrary() {
+  const cart = $('#open-download-cart');
+  $('[data-view="technical"]').hidden = true;
+  $('#preview-filter').hidden = true;
+  let team;
+  try {
+    team = createTeamClient({projectId:config.projectId, datasetId:config.datasetId});
+  } catch (error) {
+    if (!(error instanceof TeamInputError)) throw error;
+    console.warn('当前目录无法启用团队记录：', error.message);
+  }
+  downloadWorkbench = mountDownloadWorkbench({
+    config, team, createViewer, notify:showToast,
+    resolveAsset: (item, variant) => isLibraryModel(item)
+      ? resolveDownloadAsset(item, variant, url => resourceResolver.resolve(url)) : null,
+    onCartChanged: count => { $('#download-cart-count').textContent = count; },
+    onTagsChanged: () => { refreshLibraryTags(); render(); }
+  });
+  cart.hidden = false;
+  cart.onclick = () => downloadWorkbench.openCart();
+  $('#team-tag-filter').onchange = event => {
+    teamTag = event.target.value;
+    state.page = 1;
+    render();
+  };
+  refreshLibraryTags();
 }
 function renderNavigation() {
   if (projectData?.filterOptions) renderDynamicFacets();
@@ -572,19 +631,24 @@ function renderNavigation() {
   });
 }
 function renderStats() {
-  const resourceCount = activeResources().length;
-  $('#object-count').textContent = objects.length;
+  const visibleObjects = modelLibrary ? objects.filter(isLibraryModel) : objects;
+  const ids = modelLibrary ? new Set(visibleObjects.map(item => item.id)) : null;
+  const assessable = ids ? items.filter(item => ids.has(item.id)) : items;
+  const selectedCount = visibleSelection().size;
+  const resourceCount = modelLibrary
+    ? new Set(visibleObjects.flatMap(item => item.relatedIds || [])).size : activeResources().length;
+  $('#object-count').textContent = visibleObjects.length;
   $('#all-count').textContent = resourceCount;
-  $('#stat-mesh').textContent = objects.length;
+  $('#stat-mesh').textContent = visibleObjects.length;
   $('#stat-preview').textContent = resourceCount;
-  const reviewed = items.filter(a => reviewOf(a).status !== 'pending').length;
+  const reviewed = assessable.filter(a => reviewOf(a).status !== 'pending').length;
   $('#stat-reviewed').textContent = reviewed;
-  $('#stat-progress').textContent = '/' + items.length;
-  $('#selected-count').textContent = selected.size;
+  $('#stat-progress').textContent = '/' + assessable.length;
+  $('#selected-count').textContent = selectedCount;
   $('#reviewed-count').textContent = reviewed;
-  $('#selection-bar').hidden = !selected.size;
-  $('#selection-number').textContent = selected.size;
-  $('#compare-btn').disabled = selected.size < 2 || selected.size > 4;
+  $('#selection-bar').hidden = !selectedCount;
+  $('#selection-number').textContent = selectedCount;
+  $('#compare-btn').disabled = selectedCount < 2 || selectedCount > 4;
   $('#page-selection').hidden = !pageItems.length;
   $('#select-page').disabled = pageItems.every(item => selected.has(item.id));
   $('#deselect-page').disabled = pageItems.every(item => !selected.has(item.id));
@@ -646,14 +710,22 @@ function renderWeaponEffects(data) {
   return `<p class="resource-note">此处提供静态资源记录。游戏程序集、显卡程序、粒子、逆向运动学与物理效果未运行。</p><div class="effect-evidence-grid">${(data.sections || []).map(s => `<section class="research-section"><span class="evidence-label">${esc(s.level || '已核对')}</span><h3>${esc(s.title)}</h3><p>${esc(s.summary)}</p><ul>${(s.points || []).map(p => `<li>${esc(p)}</li>`).join('')}</ul>${(s.sources || []).map(r => `<a class="light-btn" href="${esc(r.url)}" download>${esc(r.label)}</a>`).join('')}</section>`).join('')}</div><h3>源贴图</h3><div class="effect-textures">${(data.figures || []).map(f => `<figure><img src="${esc(f.url)}" loading="lazy" alt="${esc(f.name)} 原始贴图"><figcaption><strong>${esc(f.name)}</strong><br>${esc(f.label)}<br><small>${esc(f.sourceObject)}</small></figcaption></figure>`).join('')}</div><h3>静态网格</h3><ul>${(data.meshes || []).map(m => `<li>${esc(m.name)}（${m.vertices} 顶点，${m.triangles} 面） <a href="${esc(m.objUrl)}" download>OBJ</a> / <a href="${esc(m.jsonUrl)}" download>原坐标 JSON</a></li>`).join('')}</ul><p>${esc(data.limitations || '静态程序不能证明实际运行时像素。')}</p>`;
 }
 function hasPreview(item) {
-  return !!(item.previewUrl || item.modelUrl);
+  return !!(item.previewUrl || item.modelUrl || (modelLibrary && isLibraryModel(item)));
 }
 function facetMatches(item) {
   return Object.entries(state.facets).every(([key, value]) => !item.isObject && ['publication', 'renderer'].includes(key) || value === 'all' || value === false || value === '' || (Array.isArray(item.facets?.[key]) ? item.facets[key].includes(value) : item.facets?.[key] === value));
 }
 function filterItems(ignoreAnimation = false) {
   const query = state.query.toLowerCase().split(/\s+/).filter(Boolean);
-  let result = activeCollection().filter(a => facetMatches(a) && (state.type === 'all' || a.type === state.type) && (state.category === 'all' || a.category === state.category) && query.every(q => a.searchText.includes(q)) && (state.review === 'all' || reviewOf(a).status === state.review) && (state.preview === 'all' || state.preview === 'yes' === hasPreview(a)) && (!config.capabilities.animationFilters || ignoreAnimation || animationFilterMatches(a)));
+  let result = activeCollection().filter(a => {
+    const tags = modelLibrary && (teamTag || query.length) ? libraryTags(a) : [];
+    const search = tags.length ? a.searchText + ' ' + tags.join(' ').toLowerCase() : a.searchText;
+    return (!teamTag || tags.includes(teamTag)) && facetMatches(a) &&
+      (state.type === 'all' || a.type === state.type) && (state.category === 'all' || a.category === state.category) &&
+      query.every(q => search.includes(q)) && (state.review === 'all' || reviewOf(a).status === state.review) &&
+      (modelLibrary || state.preview === 'all' || (state.preview === 'yes') === hasPreview(a)) &&
+      (!config.capabilities.animationFilters || ignoreAnimation || animationFilterMatches(a));
+  });
   result.sort((a, b) => state.sort === 'triangles' ? (b.triangleCount ?? -1) - (a.triangleCount ?? -1) || a.name.localeCompare(b.name) : state.sort === 'name' ? a.name.localeCompare(b.name, undefined, {
     numeric: true
   }) : state.sort === 'type' ? a.type.localeCompare(b.type) || a.name.localeCompare(b.name) : Number(!!b.featured) - Number(!!a.featured) || (b.sortRank || 0) - (a.sortRank || 0) || Number(hasPreview(b)) - Number(hasPreview(a)) || (a.isObject && b.isObject ? a.catalogOrder - b.catalogOrder : 0) || a.name.localeCompare(b.name, undefined, {
@@ -703,6 +775,7 @@ function cardHTML(item) {
   const status = reviewOf(item).status;
   const type = item.isObject ? categoryLabel(item.category) : typeLabels[item.type] || '其他';
   const isList = state.layout === 'list';
+  const tags = modelLibrary ? libraryTags(item) : [];
   const counts = isList && item.isObject
     ? ['mesh', 'material', 'texture'].map(type => [type, relatedCount(item, type)])
     : [];
@@ -713,8 +786,8 @@ function cardHTML(item) {
   return `<article class="asset-card ${item.isObject ? 'object-card' : ''} ${selected.has(item.id) ? 'selected' : ''}" data-id="${esc(item.id)}">
     <input class="card-check" type="checkbox" aria-label="选择 ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''}>
     <span class="card-review ${status}">${REVIEW_STATUSES[status]}</span>
-    <button class="card-preview ${state.bg}" aria-label="查看 ${esc(item.name)}">${imageHTML(item, false, true)}${isList ? '' : `<span class="card-type">${esc(type)}</span>`}</button>
-    <div class="card-body" role="button" tabindex="0" aria-label="查看 ${esc(item.name)} 详情"><h3 title="${esc(item.name)}">${esc(item.name)}</h3>${meta}</div>
+    <button class="card-preview ${state.bg}" aria-label="查看 ${esc(item.name)}">${imageHTML(modelLibrary ? galleryModel(item) : item, false, true)}${isList ? '' : `<span class="card-type">${esc(type)}</span>`}</button>
+    <div class="card-body" role="button" tabindex="0" aria-label="查看 ${esc(item.name)} 详情"><h3 title="${esc(item.name)}">${esc(item.name)}</h3>${meta}${tags.length ? `<p class="card-library-tags">${esc(tags.join(' / '))}</p>` : ''}</div>
   </article>`;
 }
 function renderActiveFilters() {
@@ -942,7 +1015,8 @@ function detailMetricHTML(item, detail, stats) {
 }
 function detailRelationsHTML(item, detail) {
   if (detail.useBaseDiagnostics && diagnostics.has(item.id)) return relationsHTML(item);
-  const groups = ['mesh', 'material', 'texture', 'animation', 'prefab'];
+  const groups = modelLibrary ? ['mesh', 'material', 'texture', 'shader', 'animation', 'prefab']
+    : ['mesh', 'material', 'texture', 'animation', 'prefab'];
   const links = {...detail.entry, relatedIds:detail.links};
   const present = groups.map(type => [type, relatedResources(links, type)]).filter(([, resources]) => resources.length);
   const empty = groups.filter(type => !present.some(([kind]) => type === kind));
@@ -988,6 +1062,14 @@ function renderDetailAsset(item, detail) {
   $('#detail-download-message').textContent = !modelUrl && !hasImage
     ? available.length ? '当前条目提供索引或其他附件。' : '目录未提供可下载文件。'
     : '';
+  if (downloadWorkbench) {
+    const configure = $('#configure-download');
+    configure.hidden = !isLibraryModel(item);
+    configure.onclick = () => {
+      pausePlayback();
+      downloadWorkbench.configure(item, currentVariant);
+    };
+  }
   const relationHost = $('#object-relations');
   relationHost.innerHTML = detailRelationsHTML(item, detail);
   relationHost.hidden = false;
@@ -998,7 +1080,19 @@ function renderDetailAsset(item, detail) {
   });
 }
 function relationGroupHTML(type, linked, label = type === 'animation' ? '动作' : typeLabels[type] || '其他', empty = '无关联') {
-  return `<details class="relation-group" ${linked.length && ['material', 'texture'].includes(type) ? 'open' : ''}><summary>${esc(label)}<span>${linked.length} 项</span></summary>${linked.length ? `<div class="relation-list">${linked.map(resource => `<button data-related="${esc(resource.id)}" title="${esc(resource.name)}">${esc(resource.name)}${type === 'animation' ? '<small>未转换</small>' : ''}</button>`).join('')}</div>${type === 'texture' ? `<div class="relation-thumbnails">${linked.filter(a => a.previewUrl).slice(0, 12).map(resource => `<button data-related="${esc(resource.id)}" aria-label="查看贴图 ${esc(resource.name)}"><img src="${esc(resource.previewUrl)}" alt="${esc(resource.name)}"></button>`).join('')}</div>` : ''}` : `<div class="relation-empty">${esc(empty)}</div>`}</details>`;
+  const textures = type === 'texture';
+  const thumbnails = textures ? new Set(linked.filter(resource => resource.previewUrl).slice(0, 12)) : null;
+  const buttons = linked.map(resource => {
+    const name = esc(resource.name);
+    const image = thumbnails?.has(resource)
+      ? `<img src="${esc(resource.previewUrl)}" alt="" loading="lazy" decoding="async">`
+      : '';
+    return `<button data-related="${esc(resource.id)}" title="${name}">${image}<span>${name}</span>${type === 'animation' ? '<small>未转换</small>' : ''}</button>`;
+  }).join('');
+  const content = linked.length
+    ? `<div class="relation-list${textures ? ' relation-list--textures' : ''}">${buttons}</div>`
+    : `<div class="relation-empty">${esc(empty)}</div>`;
+  return `<details class="relation-group" ${linked.length && ['material', 'texture'].includes(type) ? 'open' : ''}><summary>${esc(label)}<span>${linked.length} 项</span></summary>${content}</details>`;
 }
 function sourceObjectLinksHTML(item) {
   const diagnostic = diagnostics.get(item.id);
@@ -1354,10 +1448,11 @@ async function openDetail(item) {
   previewQueue?.cancel();
   if (current) saveComment();
   current = item;
-  currentVariant = (item.variants || []).find(variant => matchesBaseModel(item, variant)) || (item.variants || [])[0] || null;
+  const detailVariants = modelLibrary && item.isObject ? modelVariants(item) : item.variants || [];
+  currentVariant = detailVariants.find(variant => matchesBaseModel(item, variant)) || detailVariants[0] || null;
   const variants = $('#resource-variant');
-  variants.hidden = !(item.variants || []).length;
-  variants.innerHTML = (item.variants || []).map(v => `<option value="${esc(v.id)}">${esc(v.label || v.id)}</option>`).join('');
+  variants.hidden = !detailVariants.length;
+  variants.innerHTML = detailVariants.map(v => `<option value="${esc(v.id)}">${esc(v.label || v.id)}</option>`).join('');
   variants.value = currentVariant?.id || '';
   const library = actionLibrary.get(item.id),
     ready = actionsFor(item);
@@ -1548,6 +1643,8 @@ function closeDetail() {
   render();
 }
 function resetFilters() {
+  teamTag = '';
+  $('#team-tag-filter').value = '';
   state = {
     ...state,
     type: 'all',
@@ -1593,7 +1690,8 @@ function download(name, content, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function exportJSON(all = false) {
-  const subset = all ? items : items.filter(a => selected.has(a.id));
+  const selection = all ? selected : visibleSelection();
+  const subset = all ? items : items.filter(a => selection.has(a.id));
   const payload = {
     ...reviewBackupIdentity(config),
     exportedAt: new Date().toISOString(),
@@ -1601,8 +1699,8 @@ function exportJSON(all = false) {
     objectCatalogVersion: objectCatalog.version,
     scope: all ? 'full-catalogue' : 'selected',
     notice: '包含目录索引、选择和审阅记录；恢复须符合导入大小限制；不包含模型字节、完整依赖或原工程备份。个人审阅记录来自当前浏览器，不自动同步。',
-    selected: [...selected],
-    reviews: Object.fromEntries(Object.entries(reviews).filter(([id]) => all || selected.has(id))),
+    selected: [...selection],
+    reviews: Object.fromEntries(Object.entries(reviews).filter(([id]) => all || selection.has(id))),
     ...(config.compactExports ? {
       animationPreviewRecords: [...animationRecords.values()],
       actionLibraryRecords: [...actionLibrary.values()]
@@ -1636,7 +1734,8 @@ function exportReviewSnapshot() {
   showToast(latest.ok ? '完整审阅快照已导出（审阅和选择，不含资产索引或模型）' : '已导出可读取的审阅快照；存储不可用或损坏，无法确认其他标签页的最新更改');
 }
 function exportCSV() {
-  const rows = [['ID', 'Name', 'Type', 'Source file', 'Path ID', 'Vertices', 'Triangles', 'Preview mode', 'Review', 'Comment'], ...items.filter(a => selected.has(a.id)).map(a => [a.id, a.name, a.type, a.provenance?.sourceFile, a.provenance?.pathId, a.vertexCount, a.triangleCount, previewLabel(a), REVIEW_STATUSES[reviewOf(a).status], reviewOf(a).comment])];
+  const selection = visibleSelection();
+  const rows = [['ID', 'Name', 'Type', 'Source file', 'Path ID', 'Vertices', 'Triangles', 'Preview mode', 'Review', 'Comment'], ...items.filter(a => selection.has(a.id)).map(a => [a.id, a.name, a.type, a.provenance?.sourceFile, a.provenance?.pathId, a.vertexCount, a.triangleCount, previewLabel(a), REVIEW_STATUSES[reviewOf(a).status], reviewOf(a).comment])];
   const safe = value => {
     let text = String(value ?? '');
     if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
@@ -1693,13 +1792,14 @@ function buildAudit() {
   content.append(restore, importStatus);
 }
 function compareSelected() {
-  const list = items.filter(a => selected.has(a.id));
+  const selection = visibleSelection();
+  const list = items.filter(a => selection.has(a.id));
   if (list.length < 2 || list.length > 4) {
     showToast('请选择 2–4 项比较');
     return;
   }
   $('#compare-grid').style.setProperty('--cols', list.length);
-  $('#compare-grid').innerHTML = list.map(item => `<section class="compare-item"><div class="compare-image ${state.bg}">${imageHTML(item, false, true)}</div><h3>${esc(item.name)}</h3><div class="detail-metrics">${metricHTML(item)}</div><dl><dt>类型</dt><dd>${esc(typeLabels[item.type] || '其他')}</dd><dt>审阅</dt><dd>${esc(REVIEW_STATUSES[reviewOf(item).status])}</dd><dt>备注</dt><dd data-comment="${esc(item.id)}"></dd></dl><button class="primary-btn" data-open="${esc(item.id)}">查看详情</button></section>`).join('');
+  $('#compare-grid').innerHTML = list.map(item => `<section class="compare-item"><div class="compare-image ${state.bg}">${imageHTML(modelLibrary ? galleryModel(item) : item, false, true)}</div><h3>${esc(item.name)}</h3><div class="detail-metrics">${metricHTML(item)}</div><dl><dt>类型</dt><dd>${esc(typeLabels[item.type] || '其他')}</dd><dt>审阅</dt><dd>${esc(REVIEW_STATUSES[reviewOf(item).status])}</dd><dt>备注</dt><dd data-comment="${esc(item.id)}"></dd></dl><button class="primary-btn" data-open="${esc(item.id)}">查看详情</button></section>`).join('');
   $$('[data-comment]').forEach(element => element.textContent = reviewOf(itemMap.get(element.dataset.comment)).comment || '未填写');
   $$('[data-open]').forEach(button => button.onclick = () => {
     $('#compare-modal').close();
@@ -1774,13 +1874,14 @@ $$('[data-bg]').forEach(button => button.onclick = () => {
   $('#preview-stage-b').className = 'preview-stage ' + state.bg;
 });
 $('#clear-selection').onclick = () => {
-  persist({selection: {clear: true}});
+  persist({selection: modelLibrary ? {remove: [...visibleSelection()]} : {clear: true}});
   selectionAnchor = null;
   render();
 };
 $$('[data-batch-status]').forEach(button => button.onclick = () => {
-  if (!selected.size || (selected.size > PAGE_SIZE && !confirm(`标记已选的 ${selected.size} 项资产？`))) return;
-  const intent = createBatchReviewIntent(selected, button.dataset.batchStatus, new Date().toISOString());
+  const selection = visibleSelection();
+  if (!selection.size || (selection.size > PAGE_SIZE && !confirm(`标记已选的 ${selection.size} 项资产？`))) return;
+  const intent = createBatchReviewIntent(selection, button.dataset.batchStatus, new Date().toISOString());
   const saved = persist(intent);
   renderNavigation();
   render();
@@ -1996,6 +2097,7 @@ window.addEventListener('pagehide', event => {
   if (event.persisted) {
     previewQueue?.cancel();
   } else {
+    downloadWorkbench?.dispose();
     previewQueue?.dispose();
     previewQueue = null;
   }
@@ -2128,7 +2230,8 @@ function scheduleCardPreviews() {
     profile = viewerProfile(profileById(id));
   const load = node => {
     if (epoch !== thumbnailEpoch || document.hidden) return;
-    const item = itemMap.get(node.dataset.renderId),
+    const base = itemMap.get(node.dataset.renderId);
+    const item = modelLibrary && base ? galleryModel(base) : base,
       image = node.querySelector('img'),
       label = node.querySelector('.render-preview-state');
     if (!item || !image || !label) return;

@@ -118,7 +118,7 @@ export function importDirectory({source, output, id, label=id}) {
   fs.mkdirSync(output);
   try {
     const allowlist=JSON.parse(fs.readFileSync(path.join(root,'scripts/public-build-inputs.json'),'utf8'));
-    for (const relative of [...allowlist.filter(p=>!p.startsWith('demo-')&&!p.startsWith('tests/')&&p!=='project-directory.json'),'server.mjs','serve.py','validate-workspace.mjs']) {
+    for (const relative of [...allowlist.filter(p=>!p.startsWith('demo-')&&!p.startsWith('tests/')&&p!=='project-directory.json'),'server.mjs','team-api.mjs','serve.py','validate-workspace.mjs']) {
       const input=path.join(app,relative); noLinks(input);
       const target=path.join(output,relative); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.copyFileSync(input,target,fs.constants.COPYFILE_EXCL);
     }

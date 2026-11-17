@@ -83,7 +83,7 @@ let fixtureId = 0;
 async function boot(t, mode, {
   shared = false, sharedSession, sharedList, responses = {}, storageError, initialSelection,
   catalogAssets = [], catalogObjects = [asset], createViewer, downloadResource, storageValues,
-  animationIndex, actionIndex
+  animationIndex, actionIndex, dataKind = 'entity'
 } = {}) {
   const root = reviewer[mode];
   const appRoot = mode === 'hosted' ? new URL('shared/', root) : root;
@@ -92,12 +92,12 @@ async function boot(t, mode, {
   const url = 'https://fixture.invalid/review/';
   const config = {
     ...structuredClone(descriptor.config), assetRoot: url, origin: new URL(url).origin,
-    projectId: 'entity', datasetId: 'verified', renderer: descriptor.renderer, dataKind: 'entity',
+    projectId: 'entity', datasetId: 'verified', renderer: descriptor.renderer, dataKind,
     sharedSelections: shared, siteId: 'fixture', verifiedAnimation: Boolean(animationIndex)
   };
   const catalogue = deferred();
   const data = {
-    kind: 'entity',
+    kind: dataKind,
     catalog: { assets: catalogAssets },
     objectCatalog: { objects: catalogObjects },
     animationIndex, actionIndex,
@@ -135,6 +135,8 @@ async function boot(t, mode, {
     button.dataset.status = status;
     return button;
   });
+  const batchButton = new Element();
+  batchButton.dataset.batchStatus = 'keep';
   const windowEvents = new Map();
   const values = storageValues || new Map([[config.reviewKey, JSON.stringify({
     version: 1, projectId: config.projectId, datasetId: config.datasetId,
@@ -218,6 +220,7 @@ async function boot(t, mode, {
         switch (selector) {
           case '.asset-card': return cards;
           case '.review-buttons button': return buttons;
+          case '[data-batch-status]': return [batchButton];
           default: return [];
         }
       },
@@ -228,6 +231,7 @@ async function boot(t, mode, {
       windowEvents.get(name).push(run);
     } },
     location: { href: url, origin: config.origin, assign() {} }, localStorage, fetch, confirm, alert: message => alerts.push(message), URL: FixtureURL,
+    Option: function (textContent, value) { return Object.assign(new Element(), {textContent, value}); },
     __importFixture: {
       project, catalogue, createViewer, describeDownload, downloadResource, setTimeout: (run, delay) => {
         const timer = Symbol();
@@ -287,7 +291,7 @@ async function boot(t, mode, {
   const stored = () => JSON.parse(values.get(config.reviewKey));
   const dispatch = event => windowEvents.get(event)?.forEach(run => run({ persisted: true }));
   return {
-    app, get, config, buttons, calls, values, stored, requests, choose, backup, dispatch, downloads, confirmations, alerts,
+    app, get, config, buttons, batchButton, calls, values, stored, requests, choose, backup, dispatch, downloads, confirmations, alerts,
     activate() {
       for (const [name, value] of Object.entries(bindings)) {
         const property = name === 'localStorage' ? {get() {
@@ -317,6 +321,38 @@ async function boot(t, mode, {
     toast: () => get('#toast').textContent
   };
 }
+
+test('public model selection actions leave historical technical selections in the full snapshot', async t => {
+  const h = await boot(t, 'public', {
+    dataKind: 'indexed',
+    catalogObjects: [{...asset, modelUrl: 'first.glb'}],
+    responses: {'/api/workbench?projectId=entity&datasetId=verified': () => new Response(null, {status: 404})},
+    storageValues: new Map([[descriptor.config.reviewKey, JSON.stringify({
+      version: 1, projectId: 'entity', datasetId: 'verified',
+      reviews: {[libraryAsset.id]: oldReview}, selected: [asset.id, libraryAsset.id]
+    })]])
+  });
+  await h.ready();
+
+  assert.equal(h.get('#selection-number').textContent, 1);
+  h.batchButton.onclick();
+  assert.equal(h.stored().reviews[asset.id].status, 'keep');
+  assert.equal(h.stored().reviews[libraryAsset.id].status, oldReview.status);
+
+  h.get('#export-json').onclick();
+  h.get('#export-csv').onclick();
+  h.get('#export-snapshot').onclick();
+  const [json, csv, snapshot] = await Promise.all(h.downloads.map(download => download.blob.text()));
+  assert.deepEqual(JSON.parse(json).selected, [asset.id]);
+  assert.match(csv, /First object/);
+  assert.doesNotMatch(csv, /Alternate library asset/);
+  assert.deepEqual(JSON.parse(snapshot).selected, [asset.id, libraryAsset.id]);
+  assert.equal(JSON.parse(snapshot).reviews[libraryAsset.id].comment, oldReview.comment);
+
+  h.get('#clear-selection').onclick();
+  assert.deepEqual(h.stored().selected, [libraryAsset.id]);
+  assert.equal(h.get('#selection-bar').hidden, true);
+});
 
 for (const mode of Object.keys(reviewer)) {
   test(`${mode} inherits from explicit asset then prefab then the first strictly matching source`, async t => {
