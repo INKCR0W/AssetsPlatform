@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {PREVIEW_LIMITS} from '../apps/reviewer/viewer.mjs';
 import {validateProjectDescriptor,validateProjectStorage,validateCatalogData} from '../apps/reviewer/shared/project-schema.mjs';
-import {preparePreviewGLB} from './prepare-preview-glb.mjs';
+import {preparePreviewGLB,readEmbeddedGLB} from '../apps/reviewer/prepare-preview-glb.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const app = path.join(root, 'apps/reviewer');
@@ -41,18 +41,6 @@ function noLinks(target) {
     current = path.join(current, segment);
     if (fs.lstatSync(current).isSymbolicLink()) throw Error('Symbolic links are not accepted: '+current);
   }
-}
-// The importer accepts the closed two-chunk GLB profile, not ambiguous duplicate chunks.
-function embeddedDocument(bytes) {
-  if(bytes.length<28 || bytes.readUInt32LE(0)!==0x46546c67 || bytes.readUInt32LE(4)!==2 || bytes.readUInt32LE(8)!==bytes.length) throw Error('Invalid GLB 2.0 header');
-  const jsonLength=bytes.readUInt32LE(12);
-  if(bytes.readUInt32LE(16)!==0x4e4f534a || jsonLength%4 || jsonLength>PREVIEW_LIMITS.jsonBytes || 28+jsonLength>bytes.length) throw Error('Invalid GLB JSON chunk or budget');
-  const binOffset=20+jsonLength, binLength=bytes.readUInt32LE(binOffset);
-  if(bytes.readUInt32LE(binOffset+4)!==0x004e4942 || binLength%4 || binOffset+8+binLength!==bytes.length) throw Error('Expected exactly one JSON and one BIN chunk');
-  return {
-    document:JSON.parse(bytes.subarray(20,binOffset).toString('utf8').replace(/\0+$/,'')),
-    binary:bytes.subarray(binOffset+8)
-  };
 }
 function json(file, value) { fs.writeFileSync(file, JSON.stringify(value,null,2)+'\n', {flag:'wx'}); }
 // This is an explicit local export, never a public build or a source-directory mutation.
@@ -96,9 +84,7 @@ export function importDirectory({source, output, id, label=id}) {
           while(offset<bytes.length) { const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset); if(!n) throw Error('Source changed during read'); offset+=n; }
           if(fs.fstatSync(fd).size!==stat.size) throw Error('Source changed during read');
         } finally { fs.closeSync(fd); }
-        const {document,binary}=embeddedDocument(bytes);
-        // Fail closed on every external buffer/image URI, even if unused by the scene.
-        if ((document.buffers||[]).some(b=>b.uri!==undefined) || (document.images||[]).some(i=>i.uri!==undefined && !/^data:image\/(png|jpeg);base64,/.test(i.uri))) throw Error('GLB must contain its buffers and images: '+e.name);
+        const {document,binary}=readEmbeddedGLB(bytes,e.name);
         const {geometry,preview}=preparePreviewGLB(bytes,document,binary);
         totalBytes+=bytes.length;
         const relative=path.relative(source,file).split(path.sep).join('/');
@@ -125,7 +111,10 @@ export function importDirectory({source, output, id, label=id}) {
   fs.mkdirSync(output);
   try {
     const allowlist=JSON.parse(fs.readFileSync(path.join(root,'scripts/public-build-inputs.json'),'utf8'));
-    for (const relative of [...allowlist.filter(p=>!p.startsWith('demo-')&&!p.startsWith('tests/')&&p!=='project-directory.json'),'server.mjs','team-api.mjs','serve.py','validate-workspace.mjs']) {
+    for (const relative of [...allowlist.filter(p=>!p.startsWith('demo-')&&!p.startsWith('tests/')&&p!=='project-directory.json'),
+      'server.mjs','team-api.mjs','ingest-api.mjs','ingest-publication.mjs','ingest-suggestions.mjs',
+      'prepare-preview-glb.mjs','resize-preview-images.py',
+      'serve.py','validate-workspace.mjs']) {
       const input=path.join(app,relative); noLinks(input);
       const target=path.join(output,relative); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.copyFileSync(input,target,fs.constants.COPYFILE_EXCL);
     }

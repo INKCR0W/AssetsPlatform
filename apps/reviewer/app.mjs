@@ -529,6 +529,13 @@ async function init() {
     reviews = sanitizeReviews(reviews, known);
     selected = new Set([...selected].filter(id => known.has(id)));
     configureShell();
+    const ingest = $('#open-ingest');
+    ingest.hidden = !projectData.ingestEnabled;
+    if (projectData.ingestEnabled) {
+      const url = new URL('ingest.html', location.href);
+      url.search = new URLSearchParams({project:config.projectId, dataset:config.datasetId});
+      ingest.href = url.href;
+    }
     buildProfiles();
     buildAudit();
     if (modelLibrary) mountModelLibrary();

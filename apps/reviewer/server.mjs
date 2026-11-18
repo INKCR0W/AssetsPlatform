@@ -8,6 +8,9 @@ const port=Number(process.env.PORT||8768);
 const teamAPI = process.env.ASSETS_TEAM_CONFIG
   ? await (await import('./team-api.mjs')).createTeamAPI({configFile:process.env.ASSETS_TEAM_CONFIG, staticRoot:root})
   : null;
+const ingestAPI = process.env.ASSETS_INGEST_CONFIG
+  ? await (await import('./ingest-api.mjs')).createIngestAPI({configFile:process.env.ASSETS_INGEST_CONFIG, staticRoot:root})
+  : null;
 
 function endWithStatus(res, status) {
   res.writeHead(status);
@@ -43,7 +46,7 @@ function streamFile(res, target, headers) {
   });
 }
 
-http.createServer((req, res) => {
+async function serveRequest(req, res) {
   let requested;
   try {
     requested = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
@@ -51,9 +54,10 @@ http.createServer((req, res) => {
     return endWithStatus(res, 400);
   }
   if (requested === '/api/workbench' && teamAPI) {
-    teamAPI(req, res).catch(error => handleFileError(res, error));
+    await teamAPI(req, res);
     return;
   }
+  if (ingestAPI && await ingestAPI(req, res, requested)) return;
   if (req.method !== 'GET' && req.method !== 'HEAD') return endWithStatus(res, 405);
   if (requested.includes('\0') || requested.split('/').some(part => part.startsWith('.'))) return endWithStatus(res, 404);
   const target = path.resolve(root, '.' + requested + (requested.endsWith('/') ? 'index.html' : ''));
@@ -79,4 +83,8 @@ http.createServer((req, res) => {
   } catch (error) {
     handleFileError(res, error);
   }
+}
+
+http.createServer((req, res) => {
+  serveRequest(req, res).catch(error => handleFileError(res, error));
 }).listen(port,'127.0.0.1',()=>console.log(`Asset Review: http://127.0.0.1:${port}/`));

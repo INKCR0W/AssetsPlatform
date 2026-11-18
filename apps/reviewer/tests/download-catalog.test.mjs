@@ -44,15 +44,22 @@ test('configuration options are scoped to their declared model version', () => {
   assert.deepEqual(result.versions[1].motions, []);
 });
 
-test('resolves original model and material files separately from their preview files', () => {
+test('resolves original model, material, and motion files separately from their previews', () => {
   const item = {
     id:'helmet', name:'Helmet', modelUrl:'assets/helmet-preview.glb', sourceModelUrl:'assets/helmet.glb',
     sourceModelSha256:'b'.repeat(64),
-    downloadOptions:{textures:[
-      {id:'leather', url:'assets/leather-preview.jpg', sourceTextureUrl:'assets/leather.png', materialIndex:4},
-      {id:'metal', url:'assets/metal.png', materialIndex:3},
-      {id:'invalid', url:'assets/metal.png', sourceTextureUrl:'assets/metadata.json', materialIndex:3}
-    ]},
+    downloadOptions:{
+      textures:[
+        {id:'leather', url:'assets/leather-preview.jpg', sourceTextureUrl:'assets/leather.png', materialIndex:4},
+        {id:'metal', url:'assets/metal.png', materialIndex:3},
+        {id:'invalid', url:'assets/metal.png', sourceTextureUrl:'assets/metadata.json', materialIndex:3}
+      ],
+      motions:[
+        {id:'turn', url:'assets/turn-preview.glb', sourceMotionUrl:'assets/turn.glb', index:0},
+        {id:'idle', url:'assets/idle.glb', index:1},
+        {id:'invalid', url:'assets/metadata.glb', sourceMotionUrl:'assets/metadata.json', index:0}
+      ]
+    },
     variants:[
       {id:'same', modelUrl:'assets/helmet-preview.glb'},
       {id:'different', modelUrl:'assets/helmet-preview.glb', sourceModelUrl:'assets/helmet-v2.glb'}
@@ -67,7 +74,12 @@ test('resolves original model and material files separately from their preview f
     ['leather','/project/assets/leather.png','image/png'],
     ['metal','/project/assets/metal.png','image/png']
   ]);
+  assert.deepEqual(same.motions, [
+    {id:'turn', label:'turn', url:'/project/assets/turn-preview.glb', sourceUrl:'/project/assets/turn.glb', index:0},
+    {id:'idle', label:'idle', url:'/project/assets/idle.glb', index:1}
+  ]);
   assert.equal(different.sourceUrl, '/project/assets/helmet-v2.glb');
   assert.equal(different.sourceSha256, undefined);
   assert.deepEqual(different.textures, []);
+  assert.deepEqual(different.motions, []);
 });

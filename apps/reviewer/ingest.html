@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#244a3a">
+  <title>批量入库 · 资产检查站</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="ingest.css">
+  <script type="module" src="ingest.mjs"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="top-width">
+      <a class="brand" id="catalog-link" href="./">资产检查站</a>
+      <button class="button quiet" id="disconnect" hidden>退出</button>
+    </div>
+  </header>
+  <main>
+    <form class="connection" id="connection">
+      <label>入库令牌<input type="password" id="token" autocomplete="off" required></label>
+      <button class="button primary" id="connect">进入</button>
+    </form>
+    <p id="notice" role="status" class="notice" hidden></p>
+    <div id="stale-plan" class="notice error stale-plan" hidden>
+      <p role="status">服务器草稿已更新</p>
+      <button class="button subtle compact" id="reload-plan">读取服务器草稿</button>
+    </div>
+    <section id="work" aria-labelledby="work-title" hidden>
+      <div class="toolbar">
+        <h1 id="work-title">批量入库</h1>
+        <div class="actions">
+          <button class="button quiet" id="new-batch">新建批次</button>
+          <button class="button subtle" id="browse-folder" hidden>选择文件夹</button>
+          <button class="button primary" id="browse-files">选择文件</button>
+          <input id="files-input" type="file" multiple hidden accept=".glb,.png,.jpg,.jpeg">
+          <input id="folder-input" type="file" webkitdirectory multiple hidden accept=".glb,.png,.jpg,.jpeg">
+        </div>
+      </div>
+      <div class="workspace-grid">
+        <div class="work-col">
+          <section class="panel" aria-labelledby="staging-title">
+            <div class="dropzone" id="dropzone">
+              <div><h2 id="staging-title">文件 <span class="count" id="file-count">0</span></h2><p>拖放 GLB、PNG、JPG</p></div>
+              <button class="button subtle compact" id="toggle-files" aria-expanded="false" aria-controls="file-list">查看文件</button>
+            </div>
+            <div class="files" id="file-list" hidden></div>
+          </section>
+          <section class="panel" aria-labelledby="bindings-title">
+            <div class="panel-head"><h2 id="bindings-title">版本</h2></div>
+            <div class="version-list" id="version-list"></div>
+            <div class="binding-head">
+              <h3>贴图与动画</h3>
+              <div class="binding-actions">
+                <button class="button quiet compact" id="suggest">匹配归属</button>
+                <button class="button quiet compact" id="toggle-review" aria-pressed="false">待确认</button>
+                <button class="button quiet compact" id="toggle-issues" aria-pressed="false">只看问题</button>
+              </div>
+            </div>
+            <div class="binding-list" id="binding-list"></div>
+          </section>
+        </div>
+        <aside class="inspector" aria-label="入库检查">
+          <section class="panel" aria-labelledby="preview-title">
+            <div class="panel-head">
+              <h2 id="preview-title">预览</h2>
+              <button class="button quiet compact" id="recenter" disabled>重置视角</button>
+            </div>
+            <div class="stage-frame">
+              <div id="stage"></div>
+              <div id="stage-hint" class="stage-hint">未选择版本</div>
+            </div>
+            <div class="preview-controls" id="preview-controls" hidden>
+              <label class="check-button"><input id="show-config" type="checkbox" checked> 预览选配</label>
+              <label class="sr-only" for="preview-animation">预览动作</label>
+              <select id="preview-animation" hidden></select>
+              <button class="button subtle compact" id="play" hidden>播放</button>
+            </div>
+            <p class="preview-status" id="preview-status" role="status" hidden></p>
+          </section>
+          <section class="panel" aria-labelledby="check-title">
+            <div class="panel-head">
+              <h2 id="check-title">校验</h2>
+              <button class="button subtle compact" id="validate">运行校验</button>
+            </div>
+            <div class="issue-list" id="issue-list"></div>
+          </section>
+        </aside>
+      </div>
+      <div class="publish-bar">
+        <strong id="publish-summary" role="status">未添加文件</strong>
+        <div class="actions">
+          <button class="button subtle" id="save" disabled>保存</button>
+          <button class="button primary" id="publish" disabled>入库</button>
+          <a class="button primary" id="view-published" hidden>查看目录</a>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

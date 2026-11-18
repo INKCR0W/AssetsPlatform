@@ -56,8 +56,10 @@ function registeredOptions(options, resolve, kind) {
       return [{id:option.id, label, url, mimeType, sourceUrl, sourceMimeType, materialIndex:option.materialIndex}];
     }
     if (extension(url) !== 'glb' || !Number.isSafeInteger(option.index) || option.index < 0) return [];
+    const sourceUrl = option.sourceMotionUrl ? resolve(option.sourceMotionUrl) : undefined;
+    if (sourceUrl !== undefined && extension(sourceUrl) !== 'glb') return [];
     seen.add(option.id);
-    return [{id:option.id, label, url, index:option.index}];
+    return [{id:option.id, label, url, index:option.index, ...(sourceUrl ? {sourceUrl} : {})}];
   });
 }
 

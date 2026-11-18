@@ -124,3 +124,4 @@
   .workbench-clips input[type="checkbox"] { min-height: 0; }
   .workbench-clips label { min-height: 44px; }
 }
+#open-ingest { text-decoration: none; white-space: nowrap; }

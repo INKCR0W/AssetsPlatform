@@ -133,7 +133,12 @@ test('standalone imported workspace loads through real HTTP, loader, adapter and
   const port=30000+Math.floor(Math.random()*20000);
   server=startLocalTestServer('server.mjs',{cwd:x.output,port});
   await server.waitUntilReady();
-  const base=`http://127.0.0.1:${port}/`;const fetchJSON=async url=>{const r=await fetch(url);assert.equal(r.status,200,url);return r.json();};
+  const base=`http://127.0.0.1:${port}/`;const fetchJSON=async (url,required=true)=>{
+   const r=await fetch(url);
+   if(!required&&r.status===404)return null;
+   assert.equal(r.status,200,url);
+   return r.json();
+  };
   const project=await loadProject({fetchJSON,location:{href:base,search:''}});assert.equal(project.config.projectId,x.id);assert.equal(project.config.datasetId,report.datasetId);
   const data=await loadProjectData(project,fetchJSON);assert.equal(data.catalog.assets.length,1);assert.equal(data.objectCatalog.objects.length,1);
   const model=data.catalog.assets[0];assert(model.triangleCount>0);assert(model.vertexCount>0);assert.equal((await fetch(base+'library/assets/preview-pending.svg')).status,200);const url=project.config.resourceResolver.resolve(model.modelUrl);const response=await fetch(url);assert.equal(response.status,200);assert(parseGLB(await response.arrayBuffer()).triangles>0);
@@ -146,6 +151,26 @@ test('standalone imported workspace loads through real HTTP, loader, adapter and
    clean(x);
   }
  }
+});
+
+test('indexed projects merge the published ingest overlay and resolve files within the project',async()=>{
+ const config={projectId:'my-library',datasetId:'dataset',dataKind:'indexed',assetRoot:'http://localhost/library/'};
+ const books=new Map([
+  ['catalog.json',{version:1,assets:[{id:'base-mesh',name:'Base mesh'}]}],
+  ['objects-catalog.json',{version:1,objects:[{id:'base-object',name:'Base object',modelUrl:'assets/base.glb'}]}],
+  ['ingested/index.json',{assets:[{id:'new-mesh',name:'New mesh'}],objects:[
+   {id:'new-object',name:'New object',modelUrl:'assets/ingested/light.glb',sourceModelUrl:'assets/ingested/full.glb'}
+  ]}]
+ ]);
+ const read=async url=>books.get(new URL(url).pathname.replace('/library/assets/',''))??null;
+ const merged=await loadProjectData({config},read);
+ assert.equal(merged.ingestEnabled,true);
+ assert.deepEqual(merged.catalog.assets.map(item=>item.id),['base-mesh','new-mesh']);
+ assert.equal(merged.objectCatalog.objects[1].sourceModelUrl,'http://localhost/library/assets/ingested/full.glb');
+ books.delete('ingested/index.json');
+ const original=await loadProjectData({config},read);
+ assert.equal(original.ingestEnabled,false);
+ assert.deepEqual(original.objectCatalog.objects.map(item=>item.id),['base-object']);
 });
 test('same input preserves identity, content changes isolate dataset and review keys',()=>{
  const x=setup();try {

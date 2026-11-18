@@ -45,6 +45,11 @@ export async function loadData({
   const assets = catalog.assetShards ? (await readAssetShards(catalog.assetShards, readJSON, config.jsonLimits || {})).map(r => mapResourceData(r, resolver)) : catalog.assets;
   const objectCatalog = await read('assets/objects-catalog.json');
   if (!objectCatalog || typeof objectCatalog !== 'object' || Array.isArray(objectCatalog) || !Array.isArray(objectCatalog.objects || objectCatalog.assets)) throw Error('assets/objects-catalog.json.objects: required array');
+  const ingested = await read('assets/ingested/index.json', false);
+  if (ingested !== null && ingested !== undefined) {
+    if (!Array.isArray(ingested.assets) || !Array.isArray(ingested.objects)) throw Error('assets/ingested/index.json: expected assets and objects arrays');
+    objectCatalog.objects = [...(objectCatalog.objects || objectCatalog.assets), ...ingested.objects];
+  }
   if (config.categoryRules) objectCatalog.objects = (objectCatalog.objects || objectCatalog.assets || []).map(record => ({
     ...record,
     objectCategory: classifyCategory(record, config.categoryRules)
@@ -60,7 +65,7 @@ export async function loadData({
   return {
     catalog: {
       ...catalog,
-      assets
+      assets:ingested ? [...assets, ...ingested.assets] : assets
     },
     objectCatalog,
     diagnostics,
@@ -68,6 +73,7 @@ export async function loadData({
     materialRules,
     animationIndex,
     actionIndex,
+    ingestEnabled: Boolean(ingested),
     // Data-only evidence, rendered by the existing common evidence panel. No uploaded code.
     loadEvidence: async item => item.previewEvidenceUrl ? readJSON(resolver.resolve(item.previewEvidenceUrl)) : null
   };

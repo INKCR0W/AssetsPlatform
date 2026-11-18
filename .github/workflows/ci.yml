@@ -20,5 +20,10 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - run: node --version && python3 --version
+      - name: Install Pillow for ingest tests
+        run: |
+          python3 -m venv "$RUNNER_TEMP/assets-test-python"
+          "$RUNNER_TEMP/assets-test-python/bin/python" -m pip install 'Pillow==13.0.0'
+          echo "$RUNNER_TEMP/assets-test-python/bin" >> "$GITHUB_PATH"
       - run: npm test
       - run: npm run build

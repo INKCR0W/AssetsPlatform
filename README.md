@@ -44,6 +44,7 @@ python3 serve.py
 - 在目录里搜索和筛选可预览模型。从模型详情查看关联材质、贴图和动作。
 - 给模型版本投票或留言，为物件添加可筛选的标签。可选的 Node 服务支持多个账号共享记录。[团队工作台配置](docs/TEAM-WORKBENCH.md)
 - 将模型版本、各材质槽的贴图和动作组合加入待下载清单，一次导出为逐项分目录的自包含 GLB。网页可使用轻量预览，导出使用所选资源的原分辨率文件。[Unity 导入](docs/UNITY-ASSET-IMPORT.md)
+- 网页和本地 agent 共用同一套批量入库接口。[批量入库](docs/BATCH-INGEST.md)
 - 查看详情、来源、层级和适配器支持的模型信息。
 - 切换源材质、白模、三阶卡通、自然柔光、双阶冷影和双阶暖调。
 - 使用支持的 A/B 视图、线框和动画能力；没有相关数据时不伪装为可播放。
@@ -65,7 +66,7 @@ python3 serve.py
 ## 构建与测试
 
 ```sh
-npm test       # 需要 Node.js 和 Python 3
+npm test       # 需要 Node.js、Python 3 和 Pillow
 npm run build # 生成 dist/reviewer，确定性静态构建
 ```
 
