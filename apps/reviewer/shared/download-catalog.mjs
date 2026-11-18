@@ -38,6 +38,37 @@ export function isLibraryModel(item) {
   return item.isObject && (hasDownloadModel(item) || modelVariants(item).length > 0);
 }
 
+function usesBaseModel(item, version) {
+  const baseSource = sourceModelUrl(item) || item.modelUrl;
+  return !version.ingestedAddition && version.modelUrl === item.modelUrl &&
+    (sourceModelUrl(version) || baseSource) === baseSource;
+}
+
+function implicitBaseVariant(item, variants) {
+  if (!hasDownloadModel(item) || variants.some(version => usesBaseModel(item, version))) return;
+  const ids = new Set(variants.map(version => version.id));
+  let id = 'base';
+  while (ids.has(id)) id += '-model';
+  return {
+    id, label:'默认版', modelUrl:item.modelUrl, modelAsset:item.modelAsset, sourceModelUrl:sourceModelUrl(item),
+    sourceModelSha256:item.sourceModelSha256, downloadOptions:item.downloadOptions
+  };
+}
+
+export function appendModelVariants(item, additions) {
+  const original = Array.isArray(item.variants) ? item.variants : [];
+  const ids = new Set(original.map(version => version?.id));
+  const appended = [];
+  for (const version of modelVariants({variants:additions})) {
+    if (ids.has(version.id)) continue;
+    ids.add(version.id);
+    appended.push({...version, ingestedAddition:true});
+  }
+  if (!appended.length) return original;
+  const base = implicitBaseVariant(item, modelVariants(item));
+  return [...(base ? [{...base, implicitBase:true}] : []), ...original, ...appended];
+}
+
 function registeredOptions(options, resolve, kind) {
   const seen = new Set();
   if (!Array.isArray(options)) return [];
@@ -72,17 +103,11 @@ export function resolveDownloadAsset(item, activeVariant, resolve = url => url) 
     return true;
   });
   const baseSource = sourceModelUrl(item) || item.modelUrl;
-  const usesBase = entry => entry.modelUrl === item.modelUrl &&
-    (sourceModelUrl(entry) || baseSource) === baseSource;
-  if (hasDownloadModel(item) && !entries.some(usesBase)) {
-    let id = 'base';
-    while (seen.has(id)) id += '-model';
-    entries.unshift({id, label:'默认版', modelUrl:item.modelUrl, sourceModelUrl:sourceModelUrl(item),
-      sourceModelSha256:item.sourceModelSha256, downloadOptions:item.downloadOptions});
-  }
+  const base = implicitBaseVariant(item, entries);
+  if (base) entries.unshift(base);
   if (!entries.length) return null;
   const versions = entries.map(entry => {
-    const sameModel = usesBase(entry);
+    const sameModel = usesBaseModel(item, entry);
     const options = entry.downloadOptions ?? (sameModel ? item.downloadOptions : undefined);
     const url = resolve(entry.modelUrl);
     const original = sourceModelUrl(entry) || (sameModel ? baseSource : entry.modelUrl);

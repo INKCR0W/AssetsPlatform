@@ -14,7 +14,7 @@ import { loadProject, loadProjectData, objectCategory, assetURL } from './shared
 import { browserStorage, loadReviewState, createReviewWriter } from './shared/selection-state.mjs';
 import { configureShell as mountShell, renderEvidenceSections } from './shared/shell-controller.mjs';
 import { getResourceResolver, mapResourceData, createProjectScope } from './shared/resource-url.mjs';
-import { galleryModel, isLibraryModel, modelVariants, resolveDownloadAsset } from './shared/download-catalog.mjs';
+import { appendModelVariants, galleryModel, isLibraryModel, modelVariants, resolveDownloadAsset } from './shared/download-catalog.mjs';
 import { mountDownloadWorkbench } from './shared/download-workbench.mjs';
 import { createTeamClient, TeamInputError } from './shared/team-client.mjs';
 const project = await guardStartup(() => loadProject());
@@ -453,6 +453,13 @@ async function readJSON(url, required = true, options = {}) {
     signal: options.signal
   });
 }
+function ingestPageUrl(targetObjectId) {
+  const url = new URL('ingest.html', location.href);
+  url.search = new URLSearchParams({project:config.projectId, dataset:config.datasetId});
+  if (targetObjectId) url.searchParams.set('targetObjectId', targetObjectId);
+  return url.href;
+}
+
 async function init() {
   loadState();
   try {
@@ -485,10 +492,17 @@ async function init() {
     });
     resourceMap = new Map(resources.map(a => [a.id, a]));
     sourceMap = new Map(resources.filter(a => a.sourceId).map(a => [a.sourceId, a]));
-    objects = (objectCatalog.objects || objectCatalog.assets || []).map((record, index) => ({
-      ...normalizeObject(record, basesById, basesBySourceId),
-      catalogOrder: index
-    }));
+    objects = (objectCatalog.objects || objectCatalog.assets || []).map((record, index) => {
+      const item = normalizeObject(record, basesById, basesBySourceId);
+      const additions = projectData.versionAdditions?.get(item.id);
+      if (additions?.length) {
+        item.variants = appendModelVariants(item, additions);
+        const addedTags = item.variants.flatMap(variant =>
+          variant?.ingestedAddition && Array.isArray(variant.tags) ? variant.tags : []);
+        item.tags = [...new Set([...(Array.isArray(item.tags) ? item.tags : []), ...addedTags])];
+      }
+      return {...item, catalogOrder:index};
+    });
     if (!objects.length) throw Error('物件目录暂不可用');
     diagnostics = new Map((projectData.diagnostics?.objects || []).filter(d => objects.some(item => item.id === d.objectId && item.sourceId === d.sourceId)).map(d => [d.objectId, d]));
     for (const object of objects) {
@@ -531,11 +545,7 @@ async function init() {
     configureShell();
     const ingest = $('#open-ingest');
     ingest.hidden = !projectData.ingestEnabled;
-    if (projectData.ingestEnabled) {
-      const url = new URL('ingest.html', location.href);
-      url.search = new URLSearchParams({project:config.projectId, dataset:config.datasetId});
-      ingest.href = url.href;
-    }
+    if (projectData.ingestEnabled) ingest.href = ingestPageUrl();
     buildProfiles();
     buildAudit();
     if (modelLibrary) mountModelLibrary();
@@ -559,6 +569,9 @@ async function init() {
     if (config.capabilities.effects) await buildWeaponEffects();
     isReviewImportReady = true;
     $('#import-btn').disabled = $('#mobile-import').disabled = $('#audit-import').disabled = false;
+    const query = new URL(location.href).searchParams;
+    const linkedObject = itemMap.get(query.get('objectId'));
+    if (linkedObject && isLibraryModel(linkedObject)) await openDetail(linkedObject, query.get('versionId'));
   } catch (error) {
     $('#load-error').hidden = false;
     $('#load-error').textContent = `${error.message}。请刷新重试；已保留当前审阅记录。`;
@@ -974,6 +987,7 @@ function downloadsHTML(item) {
 }
 function matchesBaseModel(item, variant) {
   if (!variant) return true;
+  if (variant.ingestedAddition) return false;
   if (variant.modelAsset) return variant.modelAsset === item.modelAsset &&
     (!variant.modelUrl || variant.modelUrl === item.modelUrl);
   return !!variant.modelUrl && variant.modelUrl === item.modelUrl;
@@ -1055,14 +1069,15 @@ function renderDetailAsset(item, detail) {
     ? `当前预览：${variantLabel || (detail.usesAnimationModel ? '动作模型' : '默认模型')}`
     : hasImage ? '图像预览' : '该条目未提供可预览文件';
   $('#detail-metrics').innerHTML = detailMetricHTML(item, detail);
-  $('#detail-provenance').innerHTML = provenanceHTML(item, {showGeometry:false});
+  $('#detail-provenance').innerHTML = provenanceHTML(entry.ingestedAddition ? entry : item, {showGeometry:false});
+  $('.detail-source .technical-details').hidden = Boolean(entry.ingestedAddition);
   const original = detail.usesAnimationModel ? undefined : entry.sourceModelUrl;
   const downloadModel = original || (modelAsset ? null : modelUrl);
   const filename = detailFileName(original || modelUrl);
   const file = $('#detail-download-file');
   file.textContent = filename;
   file.hidden = !filename;
-  const metadata = entry.metadataUrl || item.metadataUrl;
+  const metadata = entry.metadataUrl || (entry.ingestedAddition ? undefined : item.metadataUrl);
   const constraint = detail.sameModel ? animationRecords.get(item.id)?.variants?.constraint?.modelUrl : null;
   const links = [
     [downloadModel, original ? '下载原始 GLB' : isGLB ? '下载当前 GLB' : '下载当前模型', 'primary-btn'],
@@ -1079,6 +1094,14 @@ function renderDetailAsset(item, detail) {
   container.innerHTML = available.map(([url,label,kind='light-btn']) => `<a class="${kind}" href="${esc(url)}" download>${esc(label)}</a>`).join('');
   bindResourceDownloads({...entry, modelUrl, modelAsset}, container);
   partnerSelections?.decorateDownloads(item, container);
+  if (projectData.ingestEnabled && isLibraryModel(item)) {
+    const append = document.createElement('a');
+    append.id = 'append-version';
+    append.className = 'light-btn';
+    append.href = ingestPageUrl(item.id);
+    append.textContent = '追加版本';
+    container.append(append);
+  }
   $('#detail-download-message').textContent = !modelUrl && !hasImage
     ? available.length ? '当前条目提供索引或其他附件。' : '目录未提供可下载文件。'
     : '';
@@ -1463,13 +1486,16 @@ async function startViewers(preserveCamera = false, preservePlayback = true) {
     }
   }
 }
-async function openDetail(item) {
+async function openDetail(item, versionId) {
   thumbnailObserver?.disconnect();
   previewQueue?.cancel();
   if (current) saveComment();
   current = item;
   const detailVariants = modelLibrary && item.isObject ? modelVariants(item) : item.variants || [];
-  currentVariant = detailVariants.find(variant => matchesBaseModel(item, variant)) || detailVariants[0] || null;
+  const originalVariants = detailVariants.filter(variant => !variant.ingestedAddition && !variant.implicitBase);
+  currentVariant = detailVariants.find(variant => variant.id === versionId) ||
+    originalVariants.find(variant => matchesBaseModel(item, variant)) ||
+    originalVariants[0] || detailVariants[0] || null;
   const variants = $('#resource-variant');
   variants.hidden = !detailVariants.length;
   variants.innerHTML = detailVariants.map(v => `<option value="${esc(v.id)}">${esc(v.label || v.id)}</option>`).join('');

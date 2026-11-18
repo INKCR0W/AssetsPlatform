@@ -97,12 +97,26 @@ function testCombined(model,recipe,preview) {
   }
 }
 
-export function validateIngestPlan(batch,files) {
+export function conflictingVersionLabels(versions, existingLabels) {
+  const key=label=>String(label).normalize('NFKC').trim().toLowerCase();
+  const taken=new Set(existingLabels.map(key));
+  const conflicting=new Set();
+  for (const version of versions) {
+    const label=key(version.label);
+    if (!label) continue;
+    if (taken.has(label)) conflicting.add(version.id);
+    taken.add(label);
+  }
+  return conflicting;
+}
+
+export function validateIngestPlan(batch,files,existingLabels=[]) {
   const {versions,bindings} = batch.plan;
   const versionIds = new Set(versions.map(version => version.id));
   const usedFiles = new Set();
   const issues = [];
   const identities = new Set();
+  const conflicting=batch.target ? conflictingVersionLabels(versions,existingLabels) : new Set();
   function add(severity,code,message,versionId,bindingId,fileId) {
     issues.push({severity,code,message,versionId,bindingId,fileId});
   }
@@ -119,6 +133,7 @@ export function validateIngestPlan(batch,files) {
     const name = version.name.trim(), label = version.label.trim();
     const identity = JSON.stringify([name,label]);
     if (!name || !label) add('error','VERSION_IDENTITY_MISSING','请填写模型名和版本名。',id);
+    else if (conflicting.has(id)) add('error','DUPLICATE_VERSION_LABEL','这个模型已有同名版本，请改用其他版本名。',id);
     else if (identities.has(identity)) add('error','DUPLICATE_VERSION','该模型版本重复。',id);
     identities.add(identity);
     if (!version.source) add('warning','SOURCE_UNSET','未填写来源。',id);
@@ -252,16 +267,24 @@ export function prepareIngestPublication(batch,files) {
     const name = version.name.trim(), label = version.label.trim();
     const group = groups.get(name) || [];
     groups.set(name,group);
-    const paths = modelPaths(files.get(version.modelFileId),register);
+    const model = files.get(version.modelFileId);
+    const paths = modelPaths(model,register);
     const assetId = identifier('ingested-mesh',batch.id,version.id);
     assets.set(assetId,{id:assetId,name:name + ' · ' + label,type:'mesh',category:'model',...paths});
     const {records,options} = attachments(batch,batch.plan.bindings.filter(item => item.versionId === version.id),files,register);
     for (const [id,record] of records) assets.set(id,record);
-    const tags = sourceNames.has(version.source) ? [sourceNames.get(version.source)] : [];
+    const sourceTag = sourceNames.get(version.source);
+    const tags = distinct([...(sourceTag ? [sourceTag] : []), ...(version.tags || [])]);
     group.push({
-      id:version.id,label,assetId,assetIds:[assetId,...records.keys()],type:'object',...paths,
+      id:batch.target ? identifier('ingested-version',batch.id,version.id) : version.id,
+      label,assetId,assetIds:[assetId,...records.keys()],type:'object',...paths,
+      ...(batch.target ? {sourceModelUrl:paths.sourceModelUrl || paths.modelUrl,sourceModelSha256:model.metadata.sha256} : {}),
       sourceKind:version.source || '',tags,downloadOptions:options
     });
+  }
+  if (batch.target) {
+    const versionAdditions=[{objectId:batch.target.id,variants:[...groups.values()].flat()}];
+    return {assets:[...assets.values()],objects:[],blobs:[...blobs.values()],versionAdditions};
   }
   const objects = [...groups].map(([name,variants]) => {
     const {id:_baseId,label:_baseLabel,...base} = variants[0];

@@ -28,8 +28,12 @@
     </div>
     <section id="work" aria-labelledby="work-title" hidden>
       <div class="toolbar">
-        <h1 id="work-title">批量入库</h1>
+        <div class="work-heading">
+          <h1 id="work-title">批量入库</h1>
+          <a id="target-model" hidden></a>
+        </div>
         <div class="actions">
+          <button class="button subtle" id="show-drafts" aria-expanded="false" aria-controls="draft-box">草稿箱</button>
           <button class="button quiet" id="new-batch">新建批次</button>
           <button class="button subtle" id="browse-folder" hidden>选择文件夹</button>
           <button class="button primary" id="browse-files">选择文件</button>
@@ -37,62 +41,84 @@
           <input id="folder-input" type="file" webkitdirectory multiple hidden accept=".glb,.png,.jpg,.jpeg">
         </div>
       </div>
-      <div class="workspace-grid">
-        <div class="work-col">
-          <section class="panel" aria-labelledby="staging-title">
-            <div class="dropzone" id="dropzone">
-              <div><h2 id="staging-title">文件 <span class="count" id="file-count">0</span></h2><p>拖放 GLB、PNG、JPG</p></div>
-              <button class="button subtle compact" id="toggle-files" aria-expanded="false" aria-controls="file-list">查看文件</button>
-            </div>
-            <div class="files" id="file-list" hidden></div>
-          </section>
-          <section class="panel" aria-labelledby="bindings-title">
-            <div class="panel-head"><h2 id="bindings-title">版本</h2></div>
-            <div class="version-list" id="version-list"></div>
-            <div class="binding-head">
-              <h3>贴图与动画</h3>
-              <div class="binding-actions">
-                <button class="button quiet compact" id="suggest">匹配归属</button>
-                <button class="button quiet compact" id="toggle-review" aria-pressed="false">待确认</button>
-                <button class="button quiet compact" id="toggle-issues" aria-pressed="false">只看问题</button>
-              </div>
-            </div>
-            <div class="binding-list" id="binding-list"></div>
-          </section>
+      <section id="draft-box" class="panel draft-box" aria-label="草稿箱" hidden>
+        <div class="draft-group">
+          <h2>待我发布 <span class="count" id="incoming-count"></span></h2>
+          <ul class="draft-list" id="incoming-drafts"></ul>
         </div>
-        <aside class="inspector" aria-label="入库检查">
-          <section class="panel" aria-labelledby="preview-title">
-            <div class="panel-head">
-              <h2 id="preview-title">预览</h2>
-              <button class="button quiet compact" id="recenter" disabled>重置视角</button>
-            </div>
-            <div class="stage-frame">
-              <div id="stage"></div>
-              <div id="stage-hint" class="stage-hint">未选择版本</div>
-            </div>
-            <div class="preview-controls" id="preview-controls" hidden>
-              <label class="check-button"><input id="show-config" type="checkbox" checked> 预览选配</label>
-              <label class="sr-only" for="preview-animation">预览动作</label>
-              <select id="preview-animation" hidden></select>
-              <button class="button subtle compact" id="play" hidden>播放</button>
-            </div>
-            <p class="preview-status" id="preview-status" role="status" hidden></p>
-          </section>
-          <section class="panel" aria-labelledby="check-title">
-            <div class="panel-head">
-              <h2 id="check-title">校验</h2>
-              <button class="button subtle compact" id="validate">运行校验</button>
-            </div>
-            <div class="issue-list" id="issue-list"></div>
-          </section>
-        </aside>
+        <div class="draft-group">
+          <h2>我的草稿 <span class="count" id="own-count"></span></h2>
+          <ul class="draft-list" id="own-drafts"></ul>
+        </div>
+      </section>
+      <div class="handoff-bar" id="handoff-bar" hidden>
+        <p id="handoff-status" hidden></p>
+        <form id="handoff-form" hidden>
+          <label class="sr-only" for="handoff-recipient">接收人</label>
+          <select id="handoff-recipient" required></select>
+          <button class="button subtle compact" type="submit">交接草稿</button>
+        </form>
+        <button class="button subtle compact" id="undo-handoff" hidden></button>
+        <button class="button quiet compact danger" id="discard-draft" hidden>丢弃草稿</button>
       </div>
-      <div class="publish-bar">
-        <strong id="publish-summary" role="status">未添加文件</strong>
-        <div class="actions">
-          <button class="button subtle" id="save" disabled>保存</button>
-          <button class="button primary" id="publish" disabled>入库</button>
-          <a class="button primary" id="view-published" hidden>查看目录</a>
+      <div id="draft-editor">
+        <div class="workspace-grid">
+          <div class="work-col">
+            <section class="panel" aria-labelledby="staging-title">
+              <div class="dropzone" id="dropzone">
+                <div><h2 id="staging-title">文件 <span class="count" id="file-count">0</span></h2><p id="drop-help">拖放 GLB、PNG、JPG</p></div>
+                <button class="button subtle compact" id="toggle-files" aria-expanded="false" aria-controls="file-list">查看文件</button>
+              </div>
+              <div class="files" id="file-list" hidden></div>
+            </section>
+            <section class="panel" aria-labelledby="bindings-title">
+              <div class="panel-head"><h2 id="bindings-title">版本</h2></div>
+              <div class="version-list" id="version-list"></div>
+              <div class="binding-head">
+                <h3>贴图与动画</h3>
+                <div class="binding-actions">
+                  <button class="button quiet compact" id="suggest">匹配归属</button>
+                  <button class="button quiet compact" id="toggle-review" aria-pressed="false">待确认</button>
+                  <button class="button quiet compact" id="toggle-issues" aria-pressed="false">只看问题</button>
+                </div>
+              </div>
+              <div class="binding-list" id="binding-list"></div>
+            </section>
+          </div>
+          <aside class="inspector" aria-label="入库检查">
+            <section class="panel" aria-labelledby="preview-title">
+              <div class="panel-head">
+                <h2 id="preview-title">预览</h2>
+                <button class="button quiet compact" id="recenter" disabled>重置视角</button>
+              </div>
+              <div class="stage-frame">
+                <div id="stage"></div>
+                <div id="stage-hint" class="stage-hint">未选择版本</div>
+              </div>
+              <div class="preview-controls" id="preview-controls" hidden>
+                <label class="check-button"><input id="show-config" type="checkbox" checked> 预览选配</label>
+                <label class="sr-only" for="preview-animation">预览动作</label>
+                <select id="preview-animation" hidden></select>
+                <button class="button subtle compact" id="play" hidden>播放</button>
+              </div>
+              <p class="preview-status" id="preview-status" role="status" hidden></p>
+            </section>
+            <section class="panel" aria-labelledby="check-title">
+              <div class="panel-head">
+                <h2 id="check-title">校验</h2>
+                <button class="button subtle compact" id="validate">运行校验</button>
+              </div>
+              <div class="issue-list" id="issue-list"></div>
+            </section>
+          </aside>
+        </div>
+        <div class="publish-bar">
+          <strong id="publish-summary" role="status">未添加文件</strong>
+          <div class="actions">
+            <button class="button subtle" id="save" disabled>保存</button>
+            <button class="button primary" id="publish" disabled>入库</button>
+            <a class="button primary" id="view-published" hidden>查看目录</a>
+          </div>
         </div>
       </div>
     </section>

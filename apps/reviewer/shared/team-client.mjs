@@ -27,12 +27,17 @@ export function validateTeamScope(projectId, datasetId) {
   return JSON.stringify([projectId, datasetId]);
 }
 
+export function normalizeAssetTag(value) {
+  const tag = typeof value === 'string' ? value.trim().normalize('NFC') : '';
+  if (tag && tag.length <= teamLimits.tag && !/[\u0000-\u001f\u007f]/u.test(tag)) return tag;
+}
+
 export function parseTeamAction(input) {
   if (!input || !validTeamId(input.assetId)) throw new TeamInputError('缺少有效的资产编号');
   const {type, assetId, versionId, vote} = input;
   if (type === 'tag') {
-    const tag = typeof input.tag === 'string' ? input.tag.trim().normalize('NFC') : '';
-    if (!tag || tag.length > teamLimits.tag || /[\u0000-\u001f\u007f]/u.test(tag)) throw new TeamInputError('标签无效或超过长度限制');
+    const tag = normalizeAssetTag(input.tag);
+    if (!tag) throw new TeamInputError('标签无效或超过长度限制');
     return {type, assetId, tag};
   }
   if (!validTeamId(versionId)) throw new TeamInputError('缺少有效的版本编号');

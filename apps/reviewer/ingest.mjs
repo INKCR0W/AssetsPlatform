@@ -25,11 +25,18 @@ let token = '';
 let batchId = null;
 let revision = 0;
 let draftLimits;
+let draftBox;
+let draftBoxOpen = false;
+let access;
+let ownerId;
+let recipientId;
+let target;
 let plan = {versions:[], bindings:[]};
 let activeVersion, validation, previewController, viewer, progress;
 let dirty = false;
 let stale = false;
 let published = false;
+let publication;
 let busy = false;
 let onlyIssues = false;
 let onlyReview = false;
@@ -49,10 +56,22 @@ function button(label, handler, classes = 'button subtle compact') {
   return node;
 }
 
+function canEditDraft() {
+  return batchId ? Boolean(access?.canEdit) : Boolean(draftBox?.permissions.create);
+}
+
+function editingLocked() {
+  return busy || published || stale || !canEditDraft();
+}
+
+function canUpload() {
+  return published ? Boolean(draftBox?.permissions.create) : canEditDraft();
+}
+
 function field(control, label, key, onChange) {
   control.setAttribute('aria-label', label);
   control.dataset.edit = key;
-  control.disabled = busy || published || stale;
+  control.disabled = editingLocked();
   control.onchange = () => onChange(control.value);
   return control;
 }
@@ -110,6 +129,10 @@ function endpoint(suffix = '') {
   return api + '/' + encodeURIComponent(batchId) + suffix;
 }
 
+function revisionHeaders() {
+  return {'If-Match':'"' + revision + '"'};
+}
+
 async function request(method, url, body, {headers = {}, signal} = {}) {
   const init = {method, signal, redirect:'error', headers:{...headers, Authorization:'Bearer ' + token}};
   if (body instanceof Blob) init.body = body;
@@ -124,6 +147,7 @@ async function request(method, url, body, {headers = {}, signal} = {}) {
       (response.status === 404 ? '找不到入库批次或服务' : '请求失败（' + response.status + '）'));
     error.status = response.status;
     error.code = result?.error?.code;
+    error.requestUrl = url;
     throw error;
   }
   return response;
@@ -136,16 +160,47 @@ async function requestJSON(...args) {
 function rememberBatch(id) {
   if (id) locationUrl.searchParams.set('batch', id);
   else locationUrl.searchParams.delete('batch');
+  if (target) locationUrl.searchParams.set('targetObjectId', target.id);
+  else locationUrl.searchParams.delete('targetObjectId');
   history.replaceState(null, '', locationUrl);
 }
 
-function applyBatch(batch) {
+function targetCatalogueUrl(versionId) {
+  const url = new URL(catalogueUrl);
+  url.searchParams.set('objectId', target.id);
+  if (versionId) url.searchParams.set('versionId', versionId);
+  return url.href;
+}
+
+async function refreshDraftBox(targetObjectId) {
+  const query = new URLSearchParams({projectId,datasetId});
+  if (targetObjectId) query.set('targetObjectId', targetObjectId);
+  draftBox = await requestJSON('GET', api + '?' + query);
+  draftLimits = draftBox.limits;
+}
+
+async function readBatch(id) {
+  const batch = await requestJSON('GET', api + '/' + encodeURIComponent(id));
+  if (batch.projectId !== projectId || batch.datasetId !== datasetId) {
+    const error = new Error('该批次不属于当前目录');
+    error.status = 404;
+    throw error;
+  }
+  return batch;
+}
+
+function applyBatch(batch, {preserveUrl = false} = {}) {
   batchId = batch.batchId;
   revision = batch.revision;
-  draftLimits = batch.limits;
+  draftLimits = batch.limits || draftBox?.limits;
+  access = batch.access;
+  ownerId = batch.ownerId;
+  recipientId = batch.recipientId;
+  target = batch.target;
   plan = batch.plan || {versions:[], bindings:[]};
   validation = batch.validation || null;
   published = batch.status === 'published';
+  publication = batch.published;
   dirty = false;
   stale = false;
   onlyIssues = false;
@@ -154,13 +209,28 @@ function applyBatch(batch) {
   files.clear();
   suggestions.clear();
   for (const file of batch.files || []) files.set(file.fileId, file);
-  if (batchId) rememberBatch(batchId);
+  openFiles(files.size > 0 && !plan.versions.length);
+  if (!preserveUrl) rememberBatch(batchId);
+}
+
+function clearBatch({showBox = false, nextTarget} = {}) {
+  applyBatch({target:nextTarget});
+  draftBoxOpen = showBox;
+  refreshPreview();
 }
 
 async function newBatch() {
-  const result = await requestJSON('POST', api, {projectId,datasetId});
+  const result = await requestJSON('POST', api, {projectId,datasetId,targetObjectId:target?.id});
   applyBatch(result);
+  draftBoxOpen = false;
   refreshPreview();
+}
+
+function isDraftConflict(error) {
+  if (['STALE_REVISION','BATCH_PUBLISHED','BATCH_ASSIGNED'].includes(error.code)) return true;
+  if (error.code !== 'BATCH_NOT_FOUND' || !batchId) return false;
+  const currentPath = endpoint();
+  return error.requestUrl === currentPath || error.requestUrl?.startsWith(currentPath + '/');
 }
 
 async function withBusy(operation) {
@@ -170,11 +240,11 @@ async function withBusy(operation) {
   render();
   try { await operation(); }
   catch (error) {
-    if (error.status === 409 && ['STALE_REVISION','BATCH_PUBLISHED'].includes(error.code)) {
+    if (isDraftConflict(error)) {
       stale = true;
       validation = null;
     } else {
-      if (error.status === 409 && error.code === 'VALIDATION_REQUIRED') validation = null;
+      if (error.status === 409 && ['VALIDATION_REQUIRED','VERSION_LABEL_CONFLICT'].includes(error.code)) validation = null;
       notice(error.message, true);
     }
   }
@@ -193,23 +263,23 @@ $('connection').onsubmit = event => {
     token = value;
     const prior = locationUrl.searchParams.get('batch');
     try {
+      await refreshDraftBox(prior ? undefined : locationUrl.searchParams.get('targetObjectId'));
+      draftBoxOpen = !prior && ((!draftBox.target && draftBox.batches.length > 0) || !draftBox.permissions.create);
       if (prior) {
-        const batch = await requestJSON('GET', api + '/' + encodeURIComponent(prior));
-        if (batch.projectId !== projectId || batch.datasetId !== datasetId) {
-          rememberBatch(null);
-          throw Error('该批次不属于当前目录');
+        try {
+          applyBatch(await readBatch(prior));
+          refreshPreview();
+        } catch (error) {
+          if (error.status !== 404) throw error;
+          clearBatch({showBox:true});
+          notice(error.message, true);
         }
-        applyBatch(batch);
-        refreshPreview();
-      } else {
-        const query = new URLSearchParams({projectId,datasetId});
-        const {limits} = await requestJSON('GET', api + '?' + query);
-        applyBatch({limits});
-      }
+      } else applyBatch({target:draftBox.target});
       $('token').value = '';
     } catch (error) {
-      if (error.status === 404 && prior) rememberBatch(null);
       token = '';
+      draftBox = undefined;
+      applyBatch({}, {preserveUrl:true});
       throw error;
     }
   });
@@ -226,10 +296,12 @@ function stage({file,relativePath}) {
 
 function addModel(file) {
   if (plan.versions.some(version => version.modelFileId === file.fileId)) return;
-  const name = file.name.replace(/\.[^.]+$/, '').slice(0, 64);
+  const stem = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 64);
   const folder = (file.relativePath || '').split('/').slice(0,-1).reverse().find(segment => versionFolder.test(segment));
   const id = 'version-' + crypto.randomUUID();
-  plan.versions.push({id, name, label:folder?.slice(0,64) || '默认版', modelFileId:file.fileId, source:''});
+  const name = target?.name || stem;
+  const label = folder?.slice(0,64) || (target ? stem : '默认版');
+  plan.versions.push({id, name, label, modelFileId:file.fileId, source:''});
   suggestions.clear();
   activeVersion ||= id;
 }
@@ -325,11 +397,12 @@ function openFiles(open) {
 }
 
 function takeFiles(readSelection) {
-  if (busy || stale || !draftLimits) return;
+  if (busy || stale || !canUpload()) return;
   withBusy(async () => {
     const eligible = (await readSelection()).filter(({file}) => acceptedFile.test(file.name));
     if (!eligible.length) return notice('未找到 GLB、PNG 或 JPG 文件。', true);
     if (!batchId || published) await newBatch();
+    draftBoxOpen = false;
     suggestions.clear();
     const errors = [];
     const capped = new Set();
@@ -344,7 +417,7 @@ function takeFiles(readSelection) {
       let uploaded;
       try { uploaded = await stage(entry); }
       catch (error) {
-        if (error.code === 'STALE_REVISION' || error.code === 'BATCH_PUBLISHED') throw error;
+        if (isDraftConflict(error)) throw error;
         errors.push(entry.file.name + '：' + error.message);
         if ([401,403,409].includes(error.status)) break;
         continue;
@@ -368,7 +441,7 @@ function takeFiles(readSelection) {
     if (added && plan.bindings.some(needsReview)) {
       try { await suggestAssignments({automatic:true}); }
       catch (error) {
-        if (error.code === 'STALE_REVISION' || error.code === 'BATCH_PUBLISHED') throw error;
+        if (isDraftConflict(error)) throw error;
         errors.push('匹配归属：' + error.message);
       }
     }
@@ -385,7 +458,7 @@ function takeFiles(readSelection) {
 
 async function savePlan() {
   if (!dirty) return;
-  const result = await requestJSON('PUT', endpoint('/plan'), plan, {headers:{'If-Match':'"' + revision + '"'}});
+  const result = await requestJSON('PUT', endpoint('/plan'), plan, {headers:revisionHeaders()});
   revision = result.revision;
   dirty = false;
 }
@@ -398,6 +471,57 @@ async function leaveDraft() {
   if (stale) return confirmDiscard();
   await savePlan();
   return true;
+}
+
+async function openDraft(id) {
+  if (!await leaveDraft()) return;
+  applyBatch(await readBatch(id));
+  draftBoxOpen = false;
+  refreshPreview();
+}
+
+async function changeHandoff(to) {
+  await savePlan();
+  const returning = access.role === 'recipient';
+  const {revision:nextRevision} = await requestJSON('POST', endpoint('/handoff'), {revision,recipientId:to});
+  revision = nextRevision;
+  validation = null;
+  if (returning) {
+    clearBatch({showBox:true});
+  } else {
+    stale = true;
+    const previousVersion = activeVersion;
+    applyBatch(await readBatch(batchId));
+    if (findVersion(previousVersion)) activeVersion = previousVersion;
+    refreshPreview();
+  }
+  await refreshDraftBox();
+  notice(to ? '草稿已交接给 ' + to : returning ? '已退回给提交人' : '已撤回交接');
+}
+
+async function deleteDraft() {
+  if (!window.confirm('丢弃本批草稿及其中上传的文件？')) return;
+  await request('DELETE', endpoint(), undefined, {headers:revisionHeaders()});
+  clearBatch({showBox:true});
+  await refreshDraftBox();
+  notice('草稿已丢弃');
+}
+
+async function deleteFile(file) {
+  const name = filePathLabel(file);
+  if (!window.confirm('删除「' + name + '」及其直接关联？')) return;
+  await savePlan();
+  const result = await requestJSON('DELETE', endpoint('/files/' + encodeURIComponent(file.fileId)), undefined,
+    {headers:revisionHeaders()});
+  plan = result.plan;
+  revision = result.revision;
+  files.delete(file.fileId);
+  validation = null;
+  onlyIssues = false;
+  suggestions.clear();
+  if (!findVersion(activeVersion)) activeVersion = plan.versions[0]?.id;
+  refreshPreview();
+  notice('已删除 ' + name);
 }
 
 function changed(preview = true) {
@@ -426,7 +550,7 @@ function removeVersion(version) {
 
 function renderFiles() {
   const rows = [];
-  const locked = busy || published || stale;
+  const locked = editingLocked();
   const bindingLimit = draftLimits?.bindings ?? 0;
   const versionLimit = draftLimits?.versions ?? 0;
   for (const file of files.values()) {
@@ -454,6 +578,12 @@ function renderFiles() {
       const texture = button('添加贴图', () => { addBinding(file, 'texture'); changed(); });
       texture.disabled = locked || plan.bindings.length >= bindingLimit;
       row.append(texture);
+    }
+    if (access?.canEdit && !published) {
+      const remove = button('删除文件', () => withBusy(() => deleteFile(file)), 'button quiet compact danger');
+      remove.disabled = locked;
+      remove.setAttribute('aria-label', '删除文件 ' + filePathLabel(file));
+      row.append(remove);
     }
     rows.push(row);
   }
@@ -483,14 +613,17 @@ function renderVersions() {
         version.source, value => { version.source = value; changed(false); }));
     if (active) {
       const detail = element('div', undefined, 'version-extra');
-      const name = element('label', '模型名称');
-      name.append(input('模型名称', 'version-name-' + version.id, version.name, value => {
-        version.name = value.trim(); suggestions.clear(); changed(false);
-      }));
+      if (!target) {
+        const name = element('label', '模型名称');
+        name.append(input('模型名称', 'version-name-' + version.id, version.name, value => {
+          version.name = value.trim(); suggestions.clear(); changed(false);
+        }));
+        detail.append(name);
+      }
       const shortcut = button('查看预览', () => $('preview-title').scrollIntoView({block:'start'}), 'button quiet compact preview-shortcut');
       const remove = button('移除版本', () => removeVersion(version), 'button quiet compact');
-      remove.disabled = busy || published || stale;
-      detail.append(name, shortcut, remove);
+      remove.disabled = editingLocked();
+      detail.append(shortcut, remove);
       card.append(detail);
     }
     return card;
@@ -525,7 +658,7 @@ function renderCandidates(binding, row) {
       suggestions.delete(binding.id);
       changed();
     });
-    action.disabled = busy || published || stale;
+    action.disabled = editingLocked();
     box.append(action);
   }
   if (box.childElementCount) row.append(box);
@@ -580,7 +713,7 @@ function renderBindings() {
       changed();
     }, 'remove');
     remove.setAttribute('aria-label', '移除关联 ' + fileTitle);
-    remove.disabled = busy || published || stale;
+    remove.disabled = editingLocked();
     status.append(remove);
     row.append(name, versionChoice, assignment, status);
     if (issue) row.append(element('p', issue.message, 'row-message ' + issue.severity));
@@ -619,11 +752,15 @@ function renderSummary() {
     warnings ? warnings + ' 条提示' : '校验通过') : dirty ? '未保存' : '未校验';
   $('publish-summary').textContent = progress ||
     [files.size + ' 个文件', plan.versions.length + ' 个版本', status].filter(Boolean).join(' · ');
-  $('save').disabled = busy || published || stale || !dirty;
-  $('publish').disabled = busy || published || stale || !validation || errors > 0;
-  $('publish').hidden = $('save').hidden = published;
-  $('view-published').hidden = !published;
-  $('validate').disabled = busy || published || stale || !files.size;
+  $('save').disabled = editingLocked() || !dirty;
+  $('publish').disabled = busy || published || stale || !access?.canPublish || !validation || errors > 0;
+  $('save').hidden = published || !canEditDraft();
+  $('publish').hidden = published || !access?.canPublish;
+  const view = $('view-published');
+  view.hidden = !published;
+  view.href = target ? targetCatalogueUrl(publication?.[0]?.id) : catalogueUrl.href;
+  view.textContent = target ? '查看模型' : '查看目录';
+  $('validate').disabled = editingLocked() || !files.size;
   const rows = issues.map(issue => {
     const row = button(undefined, () => showIssue(issue), 'issue-row ' + issue.severity);
     const version = plan.versions.find(item => item.id === issue.versionId);
@@ -636,13 +773,95 @@ function renderSummary() {
     validation ? '无问题' : '未校验', 'empty')]));
 }
 
+function renderDraftGroup(relation, listId, countId) {
+  const batches = draftBox.batches.filter(batch => batch.relation === relation);
+  $(countId).textContent = batches.length;
+  const rows = batches.map(batch => {
+    const row = element('li');
+    const current = batch.batchId === batchId;
+    const open = button(undefined, () => withBusy(() => openDraft(batch.batchId)), 'draft-row');
+    open.disabled = busy;
+    if (current) open.setAttribute('aria-current', 'true');
+    const title = batch.target?.name || batch.title || '未命名草稿 · ' + batch.batchId.slice(0, 8);
+    const meta = [batch.fileCount + ' 个文件', batch.versionCount + ' 个版本'];
+    if (batch.target) meta.unshift('追加版本');
+    if (relation === 'incoming') meta.push('来自 ' + batch.ownerId);
+    else if (batch.recipientId) meta.push('已交给 ' + batch.recipientId);
+    if (batch.updatedAt) {
+      const updated = new Date(batch.updatedAt);
+      if (Number.isFinite(updated.getTime())) meta.push(updated.toLocaleString());
+    }
+    const copy = element('span');
+    copy.append(element('strong',title), element('span',meta.join(' · '),'draft-meta'));
+    open.append(copy, element('span',current ? '当前草稿' : '打开','draft-open'));
+    row.append(open);
+    return row;
+  });
+  $(listId).replaceChildren(...(rows.length ? rows : [element('li','没有草稿','empty')]));
+}
+
+function renderDraftBox() {
+  $('draft-box').hidden = !draftBoxOpen || !draftBox;
+  $('show-drafts').setAttribute('aria-expanded', String(!$('draft-box').hidden));
+  if ($('draft-box').hidden) return;
+  renderDraftGroup('incoming','incoming-drafts','incoming-count');
+  renderDraftGroup('mine','own-drafts','own-count');
+}
+
+function renderHandoff() {
+  const recipients = draftBox?.recipients || [];
+  const showForm = access?.canHandoff && files.size > 0 && recipients.length > 0;
+  const canUndo = Boolean(!published && access?.canReturn);
+  const canDiscard = Boolean(!published && access?.canDelete);
+  let status = '';
+  if (!published && access?.role === 'recipient') status = '收到 ' + ownerId + ' 的入库草稿';
+  else if (!published && recipientId) status = '已交给 ' + recipientId + ' · 等待发布';
+  else if (access?.canHandoff && files.size && !recipients.length && !access.canPublish) {
+    status = '当前目录没有可接收草稿的发布者';
+  }
+  $('handoff-bar').hidden = !showForm && !canUndo && !canDiscard && !status;
+  $('handoff-status').textContent = status;
+  $('handoff-status').hidden = !status;
+  $('handoff-form').hidden = !showForm || published;
+  const picker = $('handoff-recipient');
+  const chosen = picker.value;
+  const placeholder = element('option','选择发布者');
+  placeholder.value = '';
+  picker.replaceChildren(placeholder, ...recipients.map(({id}) => {
+    const option = element('option',id);
+    option.value = id;
+    return option;
+  }));
+  picker.value = recipients.some(({id}) => id === chosen) ? chosen : '';
+  picker.disabled = busy || stale;
+  $('handoff-form').querySelector('button').disabled = busy || stale;
+  $('undo-handoff').textContent = access?.role === 'recipient' ? '退回草稿' : '撤回交接';
+  $('undo-handoff').hidden = !canUndo;
+  $('undo-handoff').disabled = busy || stale;
+  $('discard-draft').hidden = !canDiscard;
+  $('discard-draft').disabled = busy || stale;
+}
+
 function render() {
   const editing = document.activeElement?.dataset.edit;
   const connected = Boolean(draftLimits);
   $('connection').hidden = connected;
   $('disconnect').hidden = $('work').hidden = !connected;
-  $('disconnect').disabled = $('new-batch').disabled = busy;
+  $('disconnect').disabled = $('new-batch').disabled = $('show-drafts').disabled = busy;
+  $('new-batch').hidden = !draftBox?.permissions.create;
+  $('new-batch').textContent = target ? '新建版本批次' : '新建批次';
+  $('work-title').textContent = target ? '追加版本' : '批量入库';
+  const targetLink = $('target-model');
+  targetLink.hidden = !target;
+  if (target) {
+    targetLink.textContent = target.name;
+    targetLink.href = targetCatalogueUrl();
+  }
+  $('draft-editor').hidden = !batchId && !draftBox?.permissions.create;
+  $('browse-files').hidden = !canUpload();
+  $('browse-folder').hidden = !canUpload() || !('webkitdirectory' in $('folder-input'));
   $('browse-files').disabled = $('browse-folder').disabled = busy || stale;
+  $('drop-help').hidden = !canUpload();
   $('stale-plan').hidden = !connected || !stale;
   $('reload-plan').disabled = busy;
   $('connect').disabled = busy || !projectId || !datasetId;
@@ -651,10 +870,12 @@ function render() {
   $('toggle-issues').disabled = !validation;
   const pending = plan.bindings.filter(needsReview).length;
   if (!pending) onlyReview = false;
-  $('suggest').disabled = busy || stale || published || !pending || !plan.versions.length;
+  $('suggest').disabled = editingLocked() || !pending || !plan.versions.length;
   $('toggle-review').disabled = !pending;
   $('toggle-review').textContent = pending ? '待确认 ' + pending : '待确认';
   $('toggle-review').setAttribute('aria-pressed', String(onlyReview));
+  renderDraftBox();
+  renderHandoff();
   renderFiles();
   renderVersions();
   renderBindings();
@@ -822,6 +1043,7 @@ function droppedFiles(transfer) {
 }
 
 function chooseFiles(event) {
+  if (!canUpload()) return;
   const selection = selectedFiles(event.target.files);
   const picked = event.target.files.length > 0;
   event.target.value = '';
@@ -829,7 +1051,6 @@ function chooseFiles(event) {
 }
 
 $('browse-files').onclick = () => $('files-input').click();
-$('browse-folder').hidden = !('webkitdirectory' in $('folder-input'));
 $('browse-folder').onclick = () => $('folder-input').click();
 $('files-input').onchange = $('folder-input').onchange = chooseFiles;
 $('toggle-files').onclick = () => openFiles($('file-list').hidden);
@@ -854,30 +1075,50 @@ $('validate').onclick = () => withBusy(async () => {
   validation = await requestJSON('POST', endpoint('/validate'), {revision});
 });
 $('publish').onclick = () => withBusy(async () => {
-  await requestJSON('POST', endpoint('/publish'), {revision, validationId:validation.validationId}, {
+  const result = await requestJSON('POST', endpoint('/publish'), {revision, validationId:validation.validationId}, {
     headers:{'Idempotency-Key':'publish-' + validation.validationId}
   });
+  publication = result.published;
   published = true;
+  draftBox.batches = draftBox.batches.filter(batch => batch.batchId !== batchId);
 });
 $('new-batch').onclick = () => withBusy(async () => {
   if (!await leaveDraft()) return;
-  rememberBatch(null);
-  applyBatch({limits:draftLimits});
-  refreshPreview();
+  clearBatch({nextTarget:target});
 });
+$('show-drafts').onclick = () => withBusy(async () => {
+  if (!draftBoxOpen) await refreshDraftBox();
+  draftBoxOpen = !draftBoxOpen;
+});
+$('handoff-form').onsubmit = event => {
+  event.preventDefault();
+  const to = $('handoff-recipient').value;
+  if (to) withBusy(() => changeHandoff(to));
+};
+$('undo-handoff').onclick = () => withBusy(() => changeHandoff(null));
+$('discard-draft').onclick = () => withBusy(deleteDraft);
 $('disconnect').onclick = async () => {
   await withBusy(async () => {
     if (!await leaveDraft()) return;
     token = '';
-    applyBatch({});
+    draftBox = undefined;
+    draftBoxOpen = false;
+    applyBatch({}, {preserveUrl:true});
     refreshPreview();
   });
   if (!draftLimits) $('token').focus();
 };
 $('reload-plan').onclick = () => withBusy(async () => {
   if (!confirmDiscard()) return;
-  applyBatch(await requestJSON('GET', endpoint()));
-  refreshPreview();
+  try {
+    applyBatch(await readBatch(batchId));
+    refreshPreview();
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    clearBatch({showBox:true});
+    await refreshDraftBox();
+    notice(error.message, true);
+  }
 });
 $('recenter').onclick = () => viewer?.reset();
 $('show-config').onchange = refreshPreview;
@@ -900,13 +1141,13 @@ $('play').onclick = () => {
 const drop = $('dropzone');
 drop.ondragover = event => {
   event.preventDefault();
-  if (event.dataTransfer.types.includes('Files')) drop.classList.add('is-dragged');
+  if (canUpload() && !stale && !busy && event.dataTransfer.types.includes('Files')) drop.classList.add('is-dragged');
 };
 drop.ondragleave = () => drop.classList.remove('is-dragged');
 drop.ondrop = event => {
   event.preventDefault();
   drop.classList.remove('is-dragged');
-  takeFiles(droppedFiles(event.dataTransfer));
+  if (canUpload() && !stale && !busy) takeFiles(droppedFiles(event.dataTransfer));
 };
 window.addEventListener('beforeunload', event => {
   if (dirty) event.preventDefault();

@@ -14,12 +14,12 @@
       "sha256": "6ac1064d3eaaeef36e7567c8078fac59bc3e643f8d1a09db913ea876139bbf81"
     },
     "adapters/indexed-data.mjs": {
-      "bytes": 4724,
-      "sha256": "6613ddec5313fb18b58f8806bfce79affb38c45fd95202712b9639237ae9cfd2"
+      "bytes": 5454,
+      "sha256": "a187aadb9627cb22a2efb9b3b16d6b46404857828eaf6772cd3d13c3e614c03d"
     },
     "app.mjs": {
-      "bytes": 121243,
-      "sha256": "9f9bbdebab1bfd2dd25b540807c95fc8db6eedc43a37cf4c6f88b924527826db"
+      "bytes": 122769,
+      "sha256": "d2b1908ef09559e4f7b3a7b1e1b49d39a3934d9b45ada2598ba29334365b1fac"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -106,28 +106,28 @@
       "sha256": "6448ab91a761656f3f6197736fd9fa1c64082afc905e83d0f73d01f43f88c9fc"
     },
     "ingest-api.mjs": {
-      "bytes": 28637,
-      "sha256": "f6ba36e462e2b6cae5d1e2169c64bf52a4eea2f6690dffeb77164e03f3259900"
+      "bytes": 44516,
+      "sha256": "54b72106930097d0934c90ddeadeefa1ec8ed53b9c476b0273a6c7d573de611e"
     },
     "ingest-publication.mjs": {
-      "bytes": 12882,
-      "sha256": "e8d38fb08efe393bc178ba55e0dec72063ba4b026e017a38480fcff675803b40"
+      "bytes": 14060,
+      "sha256": "a382a9652a72b42c960f955a02df1eb8d49277cd184ec5e12a71074640140e81"
     },
     "ingest-suggestions.mjs": {
       "bytes": 9436,
       "sha256": "226451176d7beb01666087c3a7a19d9b7c165d22b4b51b3afc5c37d777b54988"
     },
     "ingest.css": {
-      "bytes": 9761,
-      "sha256": "86e12b036c288e6c2d40627092b127f154a06ad21994e9dd895c26d6ddbaccf4"
+      "bytes": 11652,
+      "sha256": "dabd2331731ab27654d7e8c0e2d54d30144ded8443f8762ece6670e7807539ce"
     },
     "ingest.html": {
-      "bytes": 4930,
-      "sha256": "46004e42ea4e2eab204053c25ca05844e0f338ac7fc375625b9d351a979524fd"
+      "bytes": 6361,
+      "sha256": "77ab5d341872602f494f3cde3f46142be91d71bfb258d83a013f5df0c64ae10a"
     },
     "ingest.mjs": {
-      "bytes": 36359,
-      "sha256": "f60c690c3646cfcc8562215c88b64ce7c2da775b193ade58f9b2735ca6b6f67f"
+      "bytes": 45567,
+      "sha256": "578d7d294f2b9ab9a0cfcfdd3ad28833ed126fc9bbf3460d6e51c5136665698d"
     },
     "package.json": {
       "bytes": 325,
@@ -174,8 +174,8 @@
       "sha256": "3576acd7d654d80824444728fa58c65dcad26e5ed08c0131d6c6150a354d6682"
     },
     "shared/download-catalog.mjs": {
-      "bytes": 4531,
-      "sha256": "8163cd6912c210bd8562c74c339e943be11d9b3b38fc3b3e739939d3867d4579"
+      "bytes": 5495,
+      "sha256": "1a153fcca16fe4a7ad6581bb5c86a117621e6b34209214d30b92cd66ab983311"
     },
     "shared/download-workbench.mjs": {
       "bytes": 28833,
@@ -242,8 +242,8 @@
       "sha256": "febaae60dc68adcf75e138024c439e84c455369df8715c4f31ffad182d379d47"
     },
     "shared/team-client.mjs": {
-      "bytes": 8693,
-      "sha256": "4f0b03bd57e4a0d67672ddd284f206cbcbd31ebfff6c5b8c65478951496a1ae4"
+      "bytes": 8800,
+      "sha256": "49ac859a7d850365348c71ced485002eff932ee5ad453b7c1e3f261027cd74e5"
     },
     "shared/unity-bundle.mjs": {
       "bytes": 2554,
@@ -270,8 +270,8 @@
       "sha256": "85dad2b239a6a168d8a898297439f90c2dd1ca101b17981baa71b3ff10816113"
     },
     "tests/download-catalog.test.mjs": {
-      "bytes": 4225,
-      "sha256": "f56122e964912620a77bfe6b55510080d096a134b9879bee623a9784d694c6e1"
+      "bytes": 5157,
+      "sha256": "c6d0da11e46263ed91f6db50e7ce99f3b40244a11c3f75d5dc8fdd690a58c7fa"
     },
     "tests/exact-review-restore.test.mjs": {
       "bytes": 9665,

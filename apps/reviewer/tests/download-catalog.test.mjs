@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {galleryModel, isLibraryModel, resolveDownloadAsset} from '../shared/download-catalog.mjs';
+import {appendModelVariants, galleryModel, isLibraryModel, resolveDownloadAsset} from '../shared/download-catalog.mjs';
 
 test('only objects with a model appear in the library, including variant-only objects', () => {
   assert.equal(isLibraryModel({isObject:true, metadataUrl:'assets/record.json'}), false);
@@ -82,4 +82,23 @@ test('resolves original model, material, and motion files separately from their 
   assert.equal(different.sourceSha256, undefined);
   assert.deepEqual(different.textures, []);
   assert.deepEqual(different.motions, []);
+});
+
+test('an appended version sharing model bytes keeps the implicit base and its options', () => {
+  const item = {
+    id:'cube', name:'Cube', modelUrl:'assets/cube.glb', sourceModelSha256:'a'.repeat(64),
+    downloadOptions:{textures:[{id:'base-wood',url:'assets/wood.png',materialIndex:0}]}
+  };
+  const before = resolveDownloadAsset(item);
+  const added = {
+    id:'ingested-version-distinct',label:'New',modelUrl:item.modelUrl,
+    downloadOptions:{motions:[{id:'spin',url:'assets/spin.glb',index:0}]}
+  };
+  const versions = appendModelVariants(item,[added]);
+  const after = resolveDownloadAsset({...item,variants:versions},added);
+  assert.equal(after.id,before.id);
+  assert.equal(after.activeVersionId,added.id);
+  assert.deepEqual(after.versions[0],before.versions[0]);
+  assert.deepEqual(after.versions[1].textures,[]);
+  assert.deepEqual(after.versions[1].motions.map(clip => clip.id),['spin']);
 });

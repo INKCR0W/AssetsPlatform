@@ -28,6 +28,21 @@ export async function readAssetShards(urls, readJSON, {
   }));
   return output.flat();
 }
+
+function indexVersionAdditions(additions) {
+  const byObject = new Map();
+  if (additions === undefined) return byObject;
+  if (!Array.isArray(additions)) throw Error('assets/ingested/index.json.versionAdditions: expected array');
+  for (const entry of additions) {
+    if (typeof entry?.objectId !== 'string' || !entry.objectId || !Array.isArray(entry.variants)) {
+      throw Error('assets/ingested/index.json.versionAdditions: expected object ID and variants');
+    }
+    if (!byObject.has(entry.objectId)) byObject.set(entry.objectId, []);
+    for (const variant of entry.variants) byObject.get(entry.objectId).push(variant);
+  }
+  return byObject;
+}
+
 export async function loadData({
   readJSON,
   config,
@@ -74,6 +89,7 @@ export async function loadData({
     animationIndex,
     actionIndex,
     ingestEnabled: Boolean(ingested),
+    versionAdditions: indexVersionAdditions(ingested?.versionAdditions),
     // Data-only evidence, rendered by the existing common evidence panel. No uploaded code.
     loadEvidence: async item => item.previewEvidenceUrl ? readJSON(resolver.resolve(item.previewEvidenceUrl)) : null
   };
