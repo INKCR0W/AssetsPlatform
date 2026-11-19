@@ -9,10 +9,10 @@ import {fileURLToPath} from 'node:url';
 import {loadData} from '../apps/reviewer/adapters/indexed-data.mjs';
 import {createIngestAPI} from '../apps/reviewer/ingest-api.mjs';
 import {appendModelVariants, resolveDownloadAsset} from '../apps/reviewer/shared/download-catalog.mjs';
+import {loadProject} from '../apps/reviewer/shared/project-loader.mjs';
 
 const root = fileURLToPath(new URL('../apps/reviewer',import.meta.url));
-const ownerToken = 'a'.repeat(48), secondToken = 'b'.repeat(48);
-const tokenHash = token => createHash('sha256').update(token).digest('hex');
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const basePath = '/api/v1/ingest-batches';
 const project = {projectId:'demo-a',datasetId:'example-v1',assetRoot:'/demo-a/'};
 const overlay = '/demo-a/assets/ingested/';
@@ -21,8 +21,8 @@ const names = {
   texture:'wood-blue.png', animation:'crate-sway.glb', extra:'cube.glb'
 };
 
-async function start(configFile, staticRoot=root) {
-  const handler = await createIngestAPI({configFile,staticRoot});
+async function start(configFile, staticRoot=root, defaultStateDir) {
+  const handler = await createIngestAPI({configFile,staticRoot,defaultStateDir});
   const server = createServer(async (request,response) => {
     const pathname = new URL(request.url,'http://localhost').pathname;
     if (!await handler(request,response,pathname)) response.writeHead(404).end();
@@ -37,11 +37,10 @@ async function start(configFile, staticRoot=root) {
   };
 }
 
-function client(server, token = ownerToken) {
+function client(server) {
   return async (route, method, expected, body, extraHeaders = {}) => {
     const bytes = Buffer.isBuffer(body);
-    const headers = {...(token ? {Authorization:'Bearer '+token} : {}),
-      ...(body !== undefined ? {'Content-Type':bytes?'application/octet-stream':'application/json'} : {}), ...extraHeaders};
+    const headers = {...(body !== undefined ? {'Content-Type':bytes?'application/octet-stream':'application/json'} : {}), ...extraHeaders};
     const response=await fetch(server.url+route,{method,headers,body:bytes?body:JSON.stringify(body)});
     const type=response.headers.get('content-type')||'';
     const result=type.includes('json') ? await response.json() : Buffer.from(await response.arrayBuffer());
@@ -56,27 +55,27 @@ test('ingest shares one durable API for staging, validation and atomic catalogue
   let server;
   t.after(async()=>{if(server)await server.close();await rm(scratch,{recursive:true,force:true});});
   const configFile=path.join(scratch,'ingest.json');
-  const config={stateDir:'state',projects:[project],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write','ingest:publish'],projects:['demo-a']},
-    {id:'other',tokenHash:tokenHash(secondToken),permissions:['ingest:write'],projects:['demo-a']}
-  ]};
+  const config={stateDir:'state',projects:[project]};
   await writeFile(configFile,JSON.stringify(config));
   server=await start(configFile);
-  const owner=client(server), other=client(server,secondToken), publicAPI=client(server,'');
-  assert.equal((await publicAPI(basePath,'POST',401,project)).result.error.code,'UNAUTHORIZED');
+  const owner=client(server), other=client(server), publicAPI=client(server);
   assert.deepEqual((await publicAPI(overlay+'index.json','GET',200)).result,{assets:[],objects:[]});
   assert.equal((await owner(basePath,'POST',404,{...project,datasetId:'wrong'})).result.error.code,'PROJECT_NOT_FOUND');
   const access=basePath+'?projectId=demo-a&datasetId=example-v1';
-  await publicAPI(access,'GET',401);
   await owner(basePath+'?projectId=demo-a&datasetId=wrong','GET',404);
   const {result:accessInfo}=await owner(access,'GET',200);
-  const {result:{batchId,limits}} = await owner(basePath,'POST',201,project);
+  const {result:created} = await owner(basePath,'POST',201,project);
+  const {batchId,limits}=created;
   const uri=basePath+'/'+batchId;
   assert.deepEqual(limits,{files:48,versions:20,bindings:80});
-  assert.deepEqual(accessInfo,{limits,permissions:{create:true},recipients:[],batches:[]});
-  assert.deepEqual((await owner(uri,'GET',200)).result.limits,limits);
-  assert.equal((await other(uri,'GET',404)).result.error.code,'BATCH_NOT_FOUND');
-  assert.equal((await publicAPI(uri,'GET',401)).result.error.code,'UNAUTHORIZED');
+  assert.deepEqual(accessInfo,{limits,batches:[]});
+  const {result:reopened}=await owner(uri,'GET',200);
+  assert.deepEqual(reopened.limits,limits);
+  for (const result of [created,reopened]) {
+    for (const field of ['access','ownerId','recipientId']) assert(!Object.hasOwn(result,field));
+  }
+  assert.equal((await other(uri,'GET',200)).result.batchId,batchId);
+  assert.equal((await other(access,'GET',200)).result.batches[0].batchId,batchId);
   const content=Object.fromEntries(await Promise.all(Object.entries(names).map(async ([id,name])=>
     [id,await readFile(path.join(root,'demo-a/assets',name))])));
   async function put(id, expected, data = content[id]) {
@@ -98,11 +97,11 @@ test('ingest shares one durable API for staging, validation and atomic catalogue
   assert.match(undecodable.error, /像素数据无法解码/);
   await owner(uri+'/files/no-pixels/preview','GET',404);
   const {result:standard}=await put('standard',200);
-  assert.equal(standard.sha256,tokenHash(content.standard));
+  assert.equal(standard.sha256,sha256(content.standard));
   assert.equal((await put('standard',409,Buffer.from('different'))).result.error.code,'FILE_ID_CONFLICT');
   assert.equal((await publicAPI(overlay+standard.sha256+'.glb','GET',404)).result.error.code,'ASSET_NOT_FOUND');
   assert.deepEqual((await owner(uri+'/files/standard/preview','GET',200)).result,content.standard);
-  await other(uri+'/files/standard/preview','GET',404);
+  assert.deepEqual((await other(uri+'/files/standard/preview','GET',200)).result,content.standard);
   const plan={versions:[{id:'crate',name:'木箱',label:'标准版',modelFileId:'model',source:'original'}],bindings:[
     {id:'blue',fileId:'texture',versionId:'crate',kind:'texture',materialIndex:0},
     {id:'sway',fileId:'animation',versionId:'crate',kind:'animation',clipIndex:0}
@@ -118,7 +117,7 @@ test('ingest shares one durable API for staging, validation and atomic catalogue
   plan.versions[0].modelFileId='standard';
   async function editAtRevisionOne() {
     const response=await fetch(server.url+uri+'/plan',{method:'PUT',headers:{
-      Authorization:'Bearer '+ownerToken,'Content-Type':'application/json','If-Match':'"1"'
+      'Content-Type':'application/json','If-Match':'"1"'
     },body:JSON.stringify(plan)});
     return response.status;
   }
@@ -139,11 +138,11 @@ test('ingest shares one durable API for staging, validation and atomic catalogue
   assert.equal(catalogue.objects[0].name,plan.versions[0].name);
   const resource=(await publicAPI(overlay+standard.sha256+'.glb','GET',200)).result;
   assert.deepEqual(resource,content.standard);
-  const extraDigest=tokenHash(content.extra);
+  const extraDigest=sha256(content.extra);
   await publicAPI(overlay+extraDigest+'.glb','GET',404);
   await server.close();
   server=await start(configFile);
-  assert.deepEqual((await client(server,'')(overlay+'index.json','GET',200)).result,catalogue);
+  assert.deepEqual((await client(server)(overlay+'index.json','GET',200)).result,catalogue);
   const snapshot=(await client(server)(uri,'GET',200)).result;
   assert.equal(snapshot.status,'published');
   assert.deepEqual(snapshot.published,receipt.published);
@@ -153,9 +152,7 @@ test('ingest requires an external store and exact registered project scope',asyn
   const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-config-'));
   t.after(()=>rm(scratch,{recursive:true,force:true}));
   const configFile=path.join(scratch,'ingest.json');
-  const config={stateDir:'state',projects:[{...project,datasetId:'wrong'}],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a']}
-  ]};
+  const config={stateDir:'state',projects:[{...project,datasetId:'wrong'}]};
   await writeFile(configFile,JSON.stringify(config));
   await assert.rejects(createIngestAPI({configFile,staticRoot:root}),/indexed descriptor and dataset/);
   await writeFile(configFile,JSON.stringify({...config,stateDir:root,projects:[project]}));
@@ -165,13 +162,10 @@ test('ingest requires an external store and exact registered project scope',asyn
 test('suggestions use private folder hints and leave both saved and proposed plans untouched',async t=>{
   const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-suggestions-'));
   const configFile=path.join(scratch,'ingest.json');
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a']},
-    {id:'other',tokenHash:tokenHash(secondToken),permissions:['ingest:write'],projects:['demo-a']}
-  ]}));
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project]}));
   const server=await start(configFile);
   t.after(async()=>{await server.close();await rm(scratch,{recursive:true,force:true});});
-  const owner=client(server), other=client(server,secondToken), publicAPI=client(server,'');
+  const owner=client(server), other=client(server);
   const {result:{batchId}}=await owner(basePath,'POST',201,project);
   const uri=basePath+'/'+batchId;
   const texture=await readFile(path.join(root,'demo-a/assets/wood-blue.png'));
@@ -196,10 +190,8 @@ test('suggestions use private folder hints and leave both saved and proposed pla
     {id:'standard',name:'木箱',label:'标准版',modelFileId:'std'},
     {id:'light',name:'木箱',label:'轻量版',modelFileId:'lite'}
   ],bindings:[{id:'wood',fileId:'board',kind:'texture',versionId:''}]};
-  await publicAPI(uri+'/suggest','POST',401,{revision:0,plan});
-  await other(uri+'/suggest','POST',404,{revision:0,plan});
   assert.equal((await owner(uri+'/suggest','POST',409,{revision:1,plan})).result.error.code,'STALE_REVISION');
-  const suggested=(await owner(uri+'/suggest','POST',200,{revision:0,plan})).result;
+  const suggested=(await other(uri+'/suggest','POST',200,{revision:0,plan})).result;
   assert.equal(suggested.revision,0);
   assert.equal(suggested.suggestions[0].status,'certain');
   assert.deepEqual(suggested.suggestions[0].fields,{versionId:'standard',materialIndex:0});
@@ -253,7 +245,7 @@ function publishBatch(request,uri,receipt,expected,key='append-test') {
   return request(uri+'/publish','POST',expected,{revision,validationId},{'Idempotency-Key':key});
 }
 
-test('agent tags survive draft handoff and publish on new and appended versions',async t=>{
+test('agent tags survive shared drafts and publish on new and appended versions',async t=>{
   const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-tags-'));
   const configFile=path.join(scratch,'ingest.json');
   let server;
@@ -261,12 +253,9 @@ test('agent tags survive draft handoff and publish on new and appended versions'
     if (server) await server.close();
     await rm(scratch,{recursive:true,force:true,maxRetries:2});
   });
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project],users:[
-    {id:'agent',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a']},
-    {id:'publisher',tokenHash:tokenHash(secondToken),permissions:['ingest:publish'],projects:['demo-a']}
-  ]}));
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project]}));
   server=await start(configFile);
-  const agent=client(server), publisher=client(server,secondToken), publicAPI=client(server,'');
+  const agent=client(server), publisher=client(server), publicAPI=client(server);
   const {uri}=await testBatch(agent);
   await stageDemoFile(agent,uri,'model',names.standard);
   const version={id:'main',name:'分类木箱',label:'标准版',modelFileId:'model',source:'original'};
@@ -287,11 +276,10 @@ test('agent tags survive draft handoff and publish on new and appended versions'
     {...version,id:'red',label:'红版',source:'purchased'}
   ],bindings:[]};
   const {result:{revision}}=await agent(uri+'/plan','PUT',200,plan,revisionHeader(0));
-  const {result:{revision:assignedRevision}}=await agent(uri+'/handoff','POST',200,{revision,recipientId:'publisher'});
   const {result:received}=await publisher(uri,'GET',200);
   assert.deepEqual(received.plan.versions.map(({tags})=>tags),[savedTags,['夜景','场景'],undefined]);
   assert.equal(Object.hasOwn(received.plan.versions[2],'tags'),false);
-  const validation=await validateBatch(publisher,uri,assignedRevision);
+  const validation=await validateBatch(publisher,uri,revision);
   const {result:published}=await publishBatch(publisher,uri,validation,200);
   const {objectId}=published.published[0];
   const readCatalogue=async()=> (await publicAPI(overlay+'index.json','GET',200)).result;
@@ -304,10 +292,7 @@ test('agent tags survive draft handoff and publish on new and appended versions'
   await stageDemoFile(agent,appendUri,'model',names.standard);
   const appendPlan={versions:[{...version,label:'展台版',tags:[' 陈列 ']}],bindings:[]};
   const {result:{revision:appendRevision}}=await agent(appendUri+'/plan','PUT',200,appendPlan,revisionHeader(0));
-  const {result:{revision:reviewRevision}}=await agent(appendUri+'/handoff','POST',200,{
-    revision:appendRevision,recipientId:'publisher'
-  });
-  const {result:appendReceipt}=await publishBatch(publisher,appendUri,await validateBatch(publisher,appendUri,reviewRevision),200);
+  const {result:appendReceipt}=await publishBatch(publisher,appendUri,await validateBatch(publisher,appendUri,appendRevision),200);
   const index=await readCatalogue();
   assert.deepEqual(index.objects,[object]);
   const [addition]=index.versionAdditions;
@@ -316,124 +301,115 @@ test('agent tags survive draft handoff and publish on new and appended versions'
   assert.deepEqual([...addition.variants[0].tags].sort(),['陈列','自制'].sort());
 });
 
-test('agent hands off a draft to one publisher who can return, edit and publish it',async t=>{
-  const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-handoff-'));
+test('local clients can resume and publish legacy drafts with an active handoff',async t=>{
+  const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-legacy-draft-'));
   let server;
-  t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true});});
+  t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true,maxRetries:2});});
   const configFile=path.join(scratch,'ingest.json');
-  const otherProject={...project,projectId:'demo-b',assetRoot:'/demo-b/'};
-  const observerToken='c'.repeat(48), outsideToken='d'.repeat(48);
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project,otherProject],users:[
-    {id:'agent',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a']},
-    {id:'publisher',tokenHash:tokenHash(secondToken),permissions:['ingest:publish'],projects:['demo-a']},
-    {id:'observer',tokenHash:tokenHash(observerToken),permissions:['ingest:write','ingest:publish'],projects:['demo-a']},
-    {id:'outside',tokenHash:tokenHash(outsideToken),permissions:['ingest:write','ingest:publish'],projects:['demo-b']},
-    {id:'writer',tokenHash:tokenHash('e'.repeat(48)),permissions:['ingest:write'],projects:['demo-a']}
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project],users:[
+    {id:'formerly-required-user',tokenHash:'legacy-configuration',permissions:[]}
   ]}));
   server=await start(configFile);
-  const agent=client(server), publisher=client(server,secondToken), observer=client(server,observerToken);
-  const outside=client(server,outsideToken), publicAPI=client(server,'');
-  const list=directoryQuery('demo-a');
-  const {result:box}=await agent(list,'GET',200);
-  assert.deepEqual(box.permissions,{create:true});
-  assert.deepEqual(box.recipients.map(({id})=>id).sort(),['observer','publisher']);
-  assert.deepEqual(box.batches,[]);
-  await agent(directoryQuery('demo-b'),'GET',404);
-  await outside(list,'GET',404);
-  await testBatch(outside,otherProject);
-  assert.deepEqual((await publisher(list,'GET',200)).result.permissions,{create:false});
-  await publisher(basePath,'POST',403,project);
-
-  const {batchId,uri,access}=await testBatch(agent);
-  assert.equal(access.role,'owner');
-  assert.equal(access.canHandoff,true);
-  assert.equal(access.canPublish,false);
-  const model=await stageDemoFile(agent,uri,'model',names.standard);
-  const plan={versions:[{id:'crate',name:'候审木箱',label:'标准版',modelFileId:'model',source:'original'}],bindings:[]};
-  await agent(uri+'/plan','PUT',200,plan,revisionHeader(0));
-  const {result:beforeHandoff}=await agent(uri+'/validate','POST',200,{revision:1});
-  assert(!beforeHandoff.issues.some(issue=>issue.severity==='error'),JSON.stringify(beforeHandoff.issues));
-  const {result:outbox}=await agent(list,'GET',200);
-  assert.deepEqual(outbox.batches.map(row=>[row.batchId,row.ownerId,row.relation,row.fileCount,row.versionCount]),[
-    [batchId,'agent','mine',1,1]
-  ]);
-  for (const recipientId of ['agent','outside','writer','unknown']) {
-    assert.equal((await agent(uri+'/handoff','POST',400,{revision:1,recipientId})).result.error.code,'INVALID_RECIPIENT');
-  }
-  const idempotency={'Idempotency-Key':'publisher-review'};
-  await agent(uri+'/publish','POST',403,{revision:1,validationId:beforeHandoff.validationId},idempotency);
-  await publisher(uri,'GET',404);
-  await observer(uri,'GET',404);
-  await outside(uri,'GET',404);
-
-  assert.equal((await agent(uri+'/handoff','POST',409,{revision:0,recipientId:'publisher'})).result.error.code,'STALE_REVISION');
-  assert.equal((await agent(uri+'/handoff','POST',200,{revision:1,recipientId:'publisher'})).result.revision,2);
-  const {result:frozen}=await agent(uri,'GET',200);
-  assert.equal(frozen.recipientId,'publisher');
-  assert.equal(frozen.access.canEdit,false);
-  assert.equal(frozen.access.canReturn,true);
-  assert.equal(frozen.validation,undefined);
-  await agent(uri+'/plan','PUT',409,plan,revisionHeader(2));
-  await agent(uri+'/files/model','DELETE',409,undefined,revisionHeader(2));
-  await agent(uri+'/suggest','POST',409,{revision:2});
-  await agent(uri,'DELETE',409,undefined,revisionHeader(2));
-  await observer(uri,'GET',404);
-  await observer(uri+'/files/model/preview','GET',404);
-  assert.deepEqual((await observer(list,'GET',200)).result.batches,[]);
-  const {result:inbox}=await publisher(list,'GET',200);
-  assert.deepEqual(inbox.batches.map(row=>[row.batchId,row.ownerId,row.recipientId,row.relation]),[
-    [batchId,'agent','publisher','incoming']
-  ]);
-  const {result:received}=await publisher(uri,'GET',200);
-  assert.equal(received.access.role,'recipient');
-  assert.equal(received.access.canEdit,true);
-  assert.equal(received.access.canPublish,true);
-  assert.equal(received.access.canDelete,false);
-  assert.deepEqual((await publisher(uri+'/files/model/preview','GET',200)).result,model);
-  await publisher(uri,'DELETE',403,undefined,revisionHeader(2));
-  await publisher(uri+'/publish','POST',409,{revision:2,validationId:beforeHandoff.validationId},idempotency);
-
-  assert.equal((await publisher(uri+'/handoff','POST',200,{revision:2,recipientId:null})).result.revision,3);
-  await publisher(uri,'GET',404);
-  assert.deepEqual((await publisher(list,'GET',200)).result.batches,[]);
-  assert.equal((await agent(uri,'GET',200)).result.access.canEdit,true);
-  assert.equal((await agent(uri+'/handoff','POST',200,{revision:3,recipientId:'publisher'})).result.revision,4);
-  assert.equal((await agent(uri+'/handoff','POST',200,{revision:4,recipientId:null})).result.revision,5);
-  await publisher(uri,'GET',404);
-  assert.equal((await agent(uri+'/handoff','POST',200,{revision:5,recipientId:'publisher'})).result.revision,6);
-  await publisher(uri+'/suggest','POST',200,{revision:6});
-  await stageDemoFile(publisher,uri,'extra',names.extra);
-  assert.equal((await publisher(uri+'/files/extra','DELETE',200,undefined,revisionHeader(6))).result.revision,7);
-  const revised={...plan,versions:[{...plan.versions[0],name:'复核木箱'}]};
-  await publisher(uri+'/plan','PUT',200,revised,revisionHeader(7));
-  const {result:validation}=await publisher(uri+'/validate','POST',200,{revision:8});
-  assert(!validation.issues.some(issue=>issue.severity==='error'),JSON.stringify(validation.issues));
-  const publication={revision:8,validationId:validation.validationId};
-  const {result:receipt}=await publisher(uri+'/publish','POST',200,publication,idempotency);
-  assert.equal(receipt.published[0].name,'复核木箱');
-  assert.deepEqual((await publisher(uri+'/publish','POST',200,publication,idempotency)).result,receipt);
-  assert.deepEqual((await publicAPI(overlay+'index.json','GET',200)).result.objects.map(object=>object.name),['复核木箱']);
-  assert.deepEqual((await agent(list,'GET',200)).result.batches,[]);
-  assert.deepEqual((await publisher(list,'GET',200)).result.batches,[]);
-
+  const {batchId,uri}=await testBatch(client(server));
+  const {bytes,revision}=await stageVersion(client(server),uri,'历史草稿');
+  const before=(await client(server)(uri,'GET',200)).result;
   await server.close();
   server=undefined;
+
+  const stateFile=path.join(scratch,'state/state.json');
+  const state=JSON.parse(await readFile(stateFile,'utf8'));
+  const record=state.batches.find(batch=>batch.id===batchId);
+  Object.assign(record,{owner:'legacy-writer',recipientId:'legacy-publisher'});
+  await writeFile(stateFile,JSON.stringify(state));
   server=await start(configFile);
-  assert.deepEqual((await client(server)(uri,'GET',200)).result.published,receipt.published);
-  assert.deepEqual((await client(server,secondToken)(uri,'GET',200)).result.published,receipt.published);
-  await client(server,observerToken)(uri,'GET',404);
+  const agent=client(server), browser=client(server);
+  const box=(await browser(directoryQuery('demo-a'),'GET',200)).result;
+  assert.deepEqual(box.batches.map(row=>[row.batchId,row.revision,row.fileCount,row.versionCount]),[[batchId,revision,1,1]]);
+  assert(!Object.hasOwn(box.batches[0],'ownerId'));
+  assert(!Object.hasOwn(box.batches[0],'recipientId'));
+  assert.deepEqual((await browser(uri,'GET',200)).result,before);
+  assert.deepEqual((await browser(uri+'/files/model/preview','GET',200)).result,bytes);
+  assert.equal((await browser(uri+'/handoff','POST',404,{revision,recipientId:'other'})).result.error.code,'ROUTE_NOT_FOUND');
+  await browser(uri+'/plan','PUT',409,before.plan,revisionHeader(0));
+  const plan={...before.plan,versions:[{...before.plan.versions[0],label:'继续编辑'}]};
+  const saved=(await browser(uri+'/plan','PUT',200,plan,revisionHeader(revision))).result;
+  assert.equal((await agent(uri,'GET',200)).result.plan.versions[0].label,'继续编辑');
+  const checked=await validateBatch(agent,uri,saved.revision);
+  const published=(await publishBatch(browser,uri,checked,200)).result;
+  assert.equal(published.published[0].label,'继续编辑');
+  assert.deepEqual((await agent(uri,'GET',200)).result.published,published.published);
+  assert.deepEqual((await browser(directoryQuery('demo-a'),'GET',200)).result.batches,[]);
+});
+
+test('default local ingest discovers indexed projects without a configuration file',async t=>{
+  const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-default-'));
+  let server;
+  t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true,maxRetries:2});});
+  server=await start(undefined,root,path.join(scratch,'workspace','store'));
+  const request=client(server);
+  assert.deepEqual((await request(basePath,'GET',200)).result.projects,[
+    {projectId:'demo-a',datasetId:'example-v1'},{projectId:'demo-b',datasetId:'example-v1'}
+  ]);
+  const {batchId}=await testBatch(request);
+  const {batchId:otherId}=await testBatch(request,{...project,projectId:'demo-b',assetRoot:'/demo-b/'});
+  for (const [projectId,expected] of [['demo-a',batchId],['demo-b',otherId]]) {
+    const {batches}=(await request(directoryQuery(projectId),'GET',200)).result;
+    assert.deepEqual(batches.map(row=>row.batchId),[expected]);
+  }
+  await request(basePath+'?projectId=demo-b&datasetId=foreign','GET',404);
+});
+
+test('automatic ingest accepts browser project identities and leaves unsupported layouts browseable and isolated',async t=>{
+  const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-browser-projects-'));
+  let server;
+  t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true,maxRetries:2});});
+  const staticRoot=path.join(scratch,'static');
+  const main=path.join(staticRoot,'main');
+  const nested=path.join(main,'second project');
+  await mkdir(path.join(main,'assets'),{recursive:true});
+  await mkdir(nested);
+  const readJSON=async file=>JSON.parse(await readFile(file,'utf8'));
+  const writeJSON=async (file,value)=>writeFile(file,JSON.stringify(value));
+  await writeJSON(path.join(staticRoot,'project-directory.json'),{defaultProject:'art.v2',projects:[
+    {id:'art.v2',config:'main/project-config.json'},
+    {id:'nested',config:'main/second%20project/project-config.json'}
+  ]});
+  const primaryDescriptor=await readJSON(path.join(root,'demo-a','project-config.json'));
+  const nestedDescriptor=await readJSON(path.join(root,'demo-b','project-config.json'));
+  await writeJSON(path.join(main,'project-config.json'),{...primaryDescriptor,id:'art.v2'});
+  await writeJSON(path.join(nested,'project-config.json'),{...nestedDescriptor,id:'nested'});
+  await writeJSON(path.join(main,'assets','objects-catalog.json'),{objects:[
+    {id:'own-model',name:'Parent model',modelUrl:'assets/local.glb'},
+    {id:'foreign-model',name:'Nested model',modelUrl:'second%20project/cube.glb'}
+  ]});
+  for (const id of ['art.v2','nested']) {
+    const location=new URL('http://localhost/?project='+id);
+    const loaded=await loadProject({location,fetchJSON:url=>readJSON(path.join(staticRoot,decodeURIComponent(new URL(url).pathname)))});
+    assert.equal(loaded.config.projectId,id);
+  }
+
+  server=await start(undefined,staticRoot,path.join(scratch,'store'));
+  const request=client(server);
+  assert.deepEqual((await request(basePath,'GET',200)).result.projects,[{projectId:'art.v2',datasetId:project.datasetId}]);
+  const {batchId}=await testBatch(request,{...project,projectId:'art.v2',assetRoot:'/main/'});
+  assert.equal((await request(directoryQuery('art.v2'),'GET',200)).result.batches[0].batchId,batchId);
+  await request(directoryQuery('nested'),'GET',404);
+  assert.deepEqual((await request(appendQuery('own-model','art.v2'),'GET',200)).result.target,
+    {id:'own-model',name:'Parent model'});
+  assert.equal((await request(appendQuery('foreign-model','art.v2'),'GET',500)).result.error.code,'INGEST_FAILED');
+
+  const configFile=path.join(scratch,'ingest.json');
+  await writeJSON(configFile,{stateDir:'explicit-store',projects:[{...project,projectId:'art.v2',assetRoot:'/main/'}]});
+  await assert.rejects(createIngestAPI({configFile,staticRoot}),/Invalid ingestion project declaration/);
 });
 
 test('deleting a staged file or abandoned draft preserves unrelated plans and shared blobs',async t=>{
   const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-delete-'));
   const configFile=path.join(scratch,'ingest.json');
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write','ingest:publish'],projects:['demo-a']},
-    {id:'other',tokenHash:tokenHash(secondToken),permissions:['ingest:write'],projects:['demo-a']}
-  ]}));
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project]}));
   const server=await start(configFile);
   t.after(async()=>{await server.close();await rm(scratch,{recursive:true,force:true,maxRetries:2});});
-  const owner=client(server), other=client(server,secondToken), publicAPI=client(server,'');
+  const owner=client(server), other=client(server), publicAPI=client(server);
   const {batchId,uri}=await testBatch(owner);
   const {uri:otherUri}=await testBatch(other);
   const standard=await stageDemoFile(owner,uri,'standard',names.standard);
@@ -451,11 +427,10 @@ test('deleting a staged file or abandoned draft preserves unrelated plans and sh
   await owner(uri+'/plan','PUT',200,{versions,bindings},revisionHeader(0));
   const {result:validated}=await owner(uri+'/validate','POST',200,{revision:1});
   assert(!validated.issues.some(issue=>issue.severity==='error'),JSON.stringify(validated.issues));
-  await other(uri+'/files/standard','DELETE',404,undefined,revisionHeader(1));
   await owner(uri+'/files/standard','DELETE',428);
   assert.equal((await owner(uri+'/files/standard','DELETE',409,undefined,revisionHeader(0))).result.error.code,'STALE_REVISION');
   await owner(uri+'/files/missing','DELETE',404,undefined,revisionHeader(1));
-  const {result:deleted}=await owner(uri+'/files/standard','DELETE',200,undefined,revisionHeader(1));
+  const {result:deleted}=await other(uri+'/files/standard','DELETE',200,undefined,revisionHeader(1));
   assert.equal(deleted.revision,2);
   assert.deepEqual(deleted.plan.versions,[versions[1]]);
   const {result:updated}=await owner(uri,'GET',200);
@@ -487,18 +462,18 @@ test('deleting a staged file or abandoned draft preserves unrelated plans and sh
   await other(otherUri,'DELETE',200,undefined,revisionHeader(2));
   await other(otherUri,'GET',404);
   assert.deepEqual((await other(directoryQuery('demo-a'),'GET',200)).result.batches,[]);
-  assert.deepEqual((await publicAPI(overlay+tokenHash(light)+'.glb','GET',200)).result,light);
-  assert.deepEqual((await publicAPI(overlay+tokenHash(texture)+'.png','GET',200)).result,texture);
+  assert.deepEqual((await publicAPI(overlay+sha256(light)+'.glb','GET',200)).result,light);
+  assert.deepEqual((await publicAPI(overlay+sha256(texture)+'.png','GET',200)).result,texture);
   const remainingBlobs=await readdir(path.join(scratch,'state','blobs'));
-  assert(!remainingBlobs.includes(tokenHash(standard)+'.glb'));
-  assert(remainingBlobs.includes(tokenHash(light)+'.glb'));
-  assert(remainingBlobs.includes(tokenHash(texture)+'.png'));
+  assert(!remainingBlobs.includes(sha256(standard)+'.glb'));
+  assert(remainingBlobs.includes(sha256(light)+'.glb'));
+  assert(remainingBlobs.includes(sha256(texture)+'.png'));
   assert.equal((await owner(uri,'GET',200)).result.batchId,batchId);
 });
 
 async function catalogueObjects(server) {
   const assetRoot=server.url+project.assetRoot;
-  const publicAPI=client(server,'');
+  const publicAPI=client(server);
   const {objectCatalog,versionAdditions}=await loadData({
     config:{projectId:project.projectId,datasetId:project.datasetId,assetRoot,origin:server.url},
     async readJSON(url,required=true) {
@@ -517,22 +492,18 @@ async function catalogueObjects(server) {
   });
 }
 
-test('a handed-off append keeps existing catalogue objects and their download versions intact',async t=>{
+test('an append from a second local client keeps existing catalogue objects and their download versions intact',async t=>{
   const scratch=await mkdtemp(path.join(os.tmpdir(),'assets-ingestion-append-static-'));
   let server;
   t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true});});
   const configFile=path.join(scratch,'ingest.json');
   const otherProject={...project,projectId:'demo-b',assetRoot:'/demo-b/'};
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project,otherProject],users:[
-    {id:'agent',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a','demo-b']},
-    {id:'publisher',tokenHash:tokenHash(secondToken),permissions:['ingest:publish'],projects:['demo-a']}
-  ]}));
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project,otherProject]}));
   server=await start(configFile);
-  const agent=client(server), publisher=client(server,secondToken), publicAPI=client(server,'');
+  const agent=client(server), publisher=client(server), publicAPI=client(server);
   const target={id:'object-demo-crate',name:'木制运输箱'};
   const cube={id:'object-demo-a',name:'示例立方体'};
   assert.deepEqual((await agent(appendQuery(target.id),'GET',200)).result.target,target);
-  await publicAPI(appendQuery(target.id),'GET',401);
   await agent(appendQuery(target.id,'demo-b'),'GET',404);
   await agent(basePath,'POST',404,{...otherProject,targetObjectId:target.id});
   await agent(basePath,'POST',404,{...project,targetObjectId:'mesh-demo-crate-standard'});
@@ -559,11 +530,10 @@ test('a handed-off append keeps existing catalogue objects and their download ve
   const {result:saved}=await agent(uri,'GET',200);
   assert.equal(saved.plan.versions[0].name,target.name);
   assert.deepEqual(saved.target,target);
-  await publisher(uri,'GET',404);
-  const {result:{revision:assignedRevision}}=await agent(uri+'/handoff','POST',200,{revision,recipientId:'publisher'});
+  assert.equal((await publisher(uri,'GET',200)).result.revision,revision);
   const {batches}= (await publisher(directoryQuery('demo-a'),'GET',200)).result;
   assert.deepEqual(batches.find(row=>row.batchId===batchId).target,target);
-  const validation=await validateBatch(publisher,uri,assignedRevision);
+  const validation=await validateBatch(publisher,uri,revision);
   assert(!validation.issues.some(issue=>issue.severity==='error'),JSON.stringify(validation.issues));
   const {result:published}=await publishBatch(publisher,uri,validation,200);
   assert.equal(published.published.length,1);
@@ -576,10 +546,7 @@ test('a handed-off append keeps existing catalogue objects and their download ve
 
   const implicit=await testBatch(agent,{...project,targetObjectId:cube.id});
   const cubeDraft=await stageVersion(agent,implicit.uri,'扩展版',names.extra);
-  const cubeAssignment=(await agent(implicit.uri+'/handoff','POST',200,{
-    revision:cubeDraft.revision,recipientId:'publisher'
-  })).result.revision;
-  const cubeValidation=await validateBatch(publisher,implicit.uri,cubeAssignment);
+  const cubeValidation=await validateBatch(publisher,implicit.uri,cubeDraft.revision);
   assert(!cubeValidation.issues.some(issue=>issue.severity==='error'),JSON.stringify(cubeValidation.issues));
   const {result:cubePublication}=await publishBatch(publisher,implicit.uri,cubeValidation,200);
   assert.equal(cubePublication.published[0].objectId,cube.id);
@@ -616,8 +583,8 @@ test('a handed-off append keeps existing catalogue objects and their download ve
   await server.close();
   server=undefined;
   server=await start(configFile);
-  assert.deepEqual((await client(server,'')(overlay+'index.json','GET',200)).result,index);
-  assert.deepEqual((await client(server,secondToken)(uri,'GET',200)).result.published,published.published);
+  assert.deepEqual((await client(server)(overlay+'index.json','GET',200)).result,index);
+  assert.deepEqual((await client(server)(uri,'GET',200)).result.published,published.published);
 });
 
 test('a stale append receipt cannot claim a version label already added by another draft',async t=>{
@@ -625,11 +592,9 @@ test('a stale append receipt cannot claim a version label already added by anoth
   let server;
   t.after(async()=>{if(server) await server.close();await rm(scratch,{recursive:true,force:true});});
   const configFile=path.join(scratch,'ingest.json');
-  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write','ingest:publish'],projects:['demo-a']}
-  ]}));
+  await writeFile(configFile,JSON.stringify({stateDir:'state',projects:[project]}));
   server=await start(configFile);
-  const owner=client(server), publicAPI=client(server,'');
+  const owner=client(server), publicAPI=client(server);
   const original=await testBatch(owner);
   const {revision}=await stageVersion(owner,original.uri,'基础版');
   const originalValidation=await validateBatch(owner,original.uri,revision);
@@ -704,9 +669,7 @@ test('an append lookup cannot inherit resources from a registered nested project
   await writeJSON(path.join(parent,'assets','catalog.json'),{assetShards:['nested/shard.json']});
   await writeJSON(path.join(nested,'shard.json'),[{id:'mesh-nested',modelUrl:'nested/cube.glb'}]);
   const configFile=path.join(scratch,'ingest.json');
-  await writeJSON(configFile,{stateDir:'state',projects:[project],users:[
-    {id:'owner',tokenHash:tokenHash(ownerToken),permissions:['ingest:write'],projects:['demo-a']}
-  ]});
+  await writeJSON(configFile,{stateDir:'state',projects:[project]});
   server=await start(configFile,staticRoot);
   const owner=client(server);
   await testBatch(owner);

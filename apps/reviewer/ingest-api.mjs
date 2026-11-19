@@ -1,4 +1,4 @@
-import {createHash, randomUUID, timingSafeEqual} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import {createReadStream} from 'node:fs';
 import {lstat, mkdir, open, readFile, readdir, realpath, rename, unlink} from 'node:fs/promises';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import {conflictingVersionLabels, IngestValidationError, inspectIngestFile, prep
 import {suggestIngestBindings} from './ingest-suggestions.mjs';
 import {resolveDownloadAsset} from './shared/download-catalog.mjs';
 import {createJSONBudget, readBoundedJSON} from './shared/json-budget.mjs';
-import {createResourceResolver, resolveResourceRoot} from './shared/resource-url.mjs';
+import {createResourceResolver, resolveResourceRoot, validateResourceReference} from './shared/resource-url.mjs';
 import {normalizeAssetTag, teamLimits} from './shared/team-client.mjs';
 
 const prefix = '/api/v1/ingest-batches';
@@ -18,14 +18,10 @@ const safeDataset = value => typeof value === 'string' && value.length <= 240 &&
 const safeRoot = value => typeof value === 'string' && /^\/(?:[A-Za-z0-9._-]+\/)*$/.test(value) &&
   !value.split('/').some(part => part.startsWith('.'));
 const blobPattern = /^[0-9a-f]{64}\.(?:glb|png|jpg)$/;
-const tokenPattern = /^[A-Za-z0-9_-]{32,128}$/;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const scope = (projectId, datasetId) => JSON.stringify([projectId, datasetId]);
 const mediaTypes = {glb:'model/gltf-binary', png:'image/png', jpg:'image/jpeg'};
 const sources = new Set(['', 'original', 'purchased', 'reference', 'other']);
-const writeGrant = 'ingest:write';
-const publishGrant = 'ingest:publish';
-const permissionNames = new Set([writeGrant,publishGrant]);
 const MiB = 1024 * 1024;
 const limits = {fileBytes:64*MiB, imageBytes:32*MiB, batchBytes:192*MiB, storedBytes:2*1024*MiB,
   bodyBytes:256*1024, stateBytes:16*MiB, batches:256, files:48, simultaneousUploads:4};
@@ -83,6 +79,14 @@ function registeredURL(value, base) {
   return url;
 }
 
+function catalogueDescriptorURL(value) {
+  const url = new URL(validateResourceReference(value),localOrigin+'/');
+  if (url.origin !== localOrigin || url.search || url.hash || url.username || url.password) {
+    throw Error('Invalid registered project resource URL');
+  }
+  return url;
+}
+
 async function readProjectDescriptor(root, descriptorURL) {
   const descriptorFile=await realpath(path.resolve(root,'.'+decodeURIComponent(descriptorURL.pathname)));
   if (!contained(root,descriptorFile)) throw Error('Ingestion project descriptor escapes the served directory');
@@ -100,7 +104,7 @@ function catalogueResolvers(root, registered, projects) {
         roots.push(enabled.assetRoot);
         continue;
       }
-      const descriptorURL=registeredURL(entry.config,localOrigin+'/');
+      const descriptorURL=catalogueDescriptorURL(entry.config);
       const descriptor=await readProjectDescriptor(root,descriptorURL);
       const assetRoot=resolveResourceRoot(descriptor.assetRoot,descriptorURL);
       if (descriptor.id!==entry.id || new URL(assetRoot).origin!==localOrigin ||
@@ -122,71 +126,89 @@ function catalogueResolvers(root, registered, projects) {
   };
 }
 
-async function loadConfiguration(configFile, staticRoot) {
-  const root = await realpath(staticRoot);
-  const file = await realpath(configFile);
-  if (contained(root,file)) throw Error('Ingestion configuration must be outside the served directory');
-  const config = await readDiskJSON(file, limits.bodyBytes);
-  if (!config || typeof config.stateDir !== 'string' || !config.stateDir || !Array.isArray(config.projects) ||
-      !config.projects.length || config.projects.length > 64 || !Array.isArray(config.users) ||
-      !config.users.length || config.users.length > 100) throw Error('Invalid ingestion configuration');
-  const statePath = path.resolve(path.dirname(file), config.stateDir);
-  const stateParent = await realpath(path.dirname(statePath));
-  const stateDir = path.join(stateParent, path.basename(statePath));
-  if (contained(root,stateDir) || contained(stateDir,root) || contained(stateDir,file)) {
+async function canonicalStatePath(statePath) {
+  let ancestor = path.dirname(statePath);
+  while (true) {
+    try {
+      const resolved = await realpath(ancestor);
+      return path.join(resolved,path.relative(ancestor,statePath));
+    } catch (error) {
+      const parent = path.dirname(ancestor);
+      if (error.code !== 'ENOENT' || parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+}
+
+async function prepareStateDirectory(statePath, root, configFile) {
+  const stateDir = await canonicalStatePath(path.resolve(statePath));
+  if (contained(root,stateDir) || contained(stateDir,root) || (configFile && contained(stateDir,configFile))) {
     throw Error('Ingestion state directory must be separate from files being served and the configuration');
   }
-  await mkdir(stateDir, {mode:0o700}).catch(error => { if (error.code !== 'EEXIST') throw error; });
+  await mkdir(stateDir,{recursive:true,mode:0o700});
   const info = await lstat(stateDir);
   if (!info.isDirectory() || info.isSymbolicLink()) throw Error('Ingestion state directory cannot be an alias');
+  return stateDir;
+}
+
+async function loadConfiguration({configFile, staticRoot, defaultStateDir}) {
+  const root = await realpath(staticRoot);
+  const file = configFile && await realpath(configFile);
+  if (file && contained(root,file)) throw Error('Ingestion configuration must be outside the served directory');
+  const config = file ? await readDiskJSON(file,limits.bodyBytes) : null;
+  if (file && (!config || typeof config.stateDir !== 'string' || !config.stateDir || !Array.isArray(config.projects) ||
+      !config.projects.length || config.projects.length > 64)) throw Error('Invalid ingestion configuration');
+  const statePath = file ? path.resolve(path.dirname(file),config.stateDir) : defaultStateDir;
+  if (typeof statePath !== 'string' || !statePath) throw Error('An ingestion state directory is required');
+
   const directory = await readDiskJSON(path.join(root,'project-directory.json'),2*MiB);
   const registered = new Map((directory.projects || []).map(entry=>[entry.id,entry]));
-  const projects = new Map(), assetsRoots = new Set();
-  for (const entry of config.projects) {
-    if (!id(entry?.projectId) || projects.has(entry.projectId) || !safeDataset(entry.datasetId) ||
-        !safeRoot(entry.assetRoot) || assetsRoots.has(entry.assetRoot)) throw Error('Invalid ingestion project declaration');
-    const project = registered.get(entry.projectId);
-    const descriptorURL = registeredURL(project?.config, localOrigin+'/');
+  const projects = new Map(), assetsRoots = new Map();
+  const declarations = config?.projects || [...registered.keys()].map(projectId=>({projectId}));
+  async function addProject(entry) {
+    const projectId = entry?.projectId;
+    if (!(config ? id(projectId) : safeDataset(projectId)) || projects.has(projectId)) {
+      throw Error('Invalid ingestion project declaration');
+    }
+    const registration = registered.get(projectId);
+    const descriptorURL = registeredURL(registration?.config,localOrigin+'/');
     const descriptor = await readProjectDescriptor(root,descriptorURL);
+    if (!config && descriptor.dataKind !== 'indexed') return;
     const descriptorRoot = registeredURL(descriptor.assetRoot,descriptorURL).pathname;
-    if (descriptor.id !== entry.projectId || descriptor.datasetId !== entry.datasetId ||
-        descriptor.dataKind !== 'indexed' || descriptorRoot !== entry.assetRoot ||
-        (project.assetRoot !== undefined && registeredURL(project.assetRoot,descriptorURL).pathname !== descriptorRoot)) {
+    const datasetId = config ? entry.datasetId : descriptor.datasetId;
+    const assetRoot = config ? entry.assetRoot : descriptorRoot;
+    if (!safeDataset(datasetId) || !safeRoot(assetRoot)) {
+      throw Error('Invalid ingestion project declaration');
+    }
+    if (descriptor.id !== projectId || descriptor.datasetId !== datasetId ||
+        descriptor.dataKind !== 'indexed' || descriptorRoot !== assetRoot ||
+        (registration.assetRoot !== undefined && registeredURL(registration.assetRoot,descriptorURL).pathname !== descriptorRoot)) {
       throw Error('Ingestion project must match its indexed descriptor and dataset');
     }
-    const assetDirectory=await realpath(path.join(root,entry.assetRoot.slice(1)));
+    const assetDirectory=await realpath(path.join(root,assetRoot.slice(1)));
     if (!contained(root,assetDirectory)) {
       throw Error('Ingestion project asset root escapes the served directory');
     }
-    assetsRoots.add(entry.assetRoot);
-    projects.set(entry.projectId,{...entry, key:scope(entry.projectId,entry.datasetId),
+    if (assetsRoots.has(assetRoot)) {
+      if (!config) projects.delete(assetsRoots.get(assetRoot));
+      throw Error('Ingestion projects must have distinct asset roots');
+    }
+    assetsRoots.set(assetRoot,projectId);
+    projects.set(projectId,{projectId,datasetId,assetRoot,key:scope(projectId,datasetId),
       assetDirectory,objectNames:descriptor.objectNames,resourceMounts:descriptor.resourceMounts,
       jsonLimits:descriptor.config?.jsonLimits,
-      overlayPath:entry.assetRoot+'assets/ingested/'});
+      overlayPath:assetRoot+'assets/ingested/'});
   }
-  const users = new Map(), tokens = new Set();
-  for (const user of config.users) {
-    if (!id(user?.id) || users.has(user.id) || typeof user.tokenHash !== 'string' ||
-        !/^[0-9a-f]{64}$/.test(user.tokenHash) || tokens.has(user.tokenHash) || !Array.isArray(user.projects) ||
-        !user.projects.length || user.projects.some(projectId=>!projects.has(projectId)) ||
-        !Array.isArray(user.permissions) || !user.permissions.length ||
-        user.permissions.some(value=>!permissionNames.has(value))) throw Error('Invalid ingestion user declaration');
-    tokens.add(user.tokenHash);
-    users.set(user.id,{
-      id:user.id, hash:Buffer.from(user.tokenHash,'hex'), projects:new Set(user.projects), permissions:new Set(user.permissions)
-    });
+  for (const entry of declarations) {
+    try {
+      await addProject(entry);
+    } catch (error) {
+      if (config) throw error;
+      console.warn('Skipping automatic ingestion for project',JSON.stringify(entry.projectId),error.message);
+    }
   }
-  return {stateDir,projects,users,catalogueResolver:catalogueResolvers(root,registered,projects)};
-}
-
-function authenticate(request, users) {
-  const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(request.headers.authorization || '');
-  requireRequest(match && tokenPattern.test(match[1]),401,'UNAUTHORIZED','请输入入库访问令牌。',{'WWW-Authenticate':'Bearer'});
-  const candidate = Buffer.from(digest(match[1]),'hex');
-  let actor;
-  for (const user of users.values()) if (timingSafeEqual(user.hash,candidate)) actor = user;
-  requireRequest(actor,401,'UNAUTHORIZED','入库访问令牌无效。',{'WWW-Authenticate':'Bearer'});
-  return actor;
+  const stateDir = await prepareStateDirectory(statePath,root,file);
+  return {stateDir,projects,catalogueResolver:catalogueResolvers(root,registered,projects)};
 }
 
 async function atomicWrite(file, bytes) {
@@ -515,7 +537,7 @@ async function staticCatalogueObject(project, objectId, resolve) {
   };
 }
 
-function batching(store, projects, users, catalogueResolver) {
+function batching(store, projects, catalogueResolver) {
   async function appendTarget(project, objectId) {
     requireRequest(textField(objectId,240) && objectId.trim(),400,'INVALID_TARGET_OBJECT','请选择有效的已有模型。');
     const publications=store.state.publications.filter(record=>record.key===project.key);
@@ -532,54 +554,15 @@ function batching(store, projects, users, catalogueResolver) {
     return {target:{id:objectId,name:String(object.name)},existingLabels};
   }
 
-  function draftRole(batch, actor) {
-    if (!batch || !actor.projects.has(batch.projectId) || projects.get(batch.projectId)?.datasetId !== batch.datasetId) return;
-    if (batch.owner===actor.id) return 'owner';
-    if (batch.recipientId===actor.id && actor.permissions.has(publishGrant)) return 'recipient';
-  }
-
-  function draft(batchId, actor) {
+  function draft(batchId) {
     const batch=store.state.batches.find(record=>record.id===batchId);
-    requireRequest(draftRole(batch,actor),404,'BATCH_NOT_FOUND','找不到此入库批次。');
+    requireRequest(batch && projects.get(batch.projectId)?.datasetId===batch.datasetId,
+      404,'BATCH_NOT_FOUND','找不到此入库批次。');
     return batch;
-  }
-
-  function requirePermission(allowed) {
-    requireRequest(allowed,403,'INGEST_PERMISSION_REQUIRED','当前令牌不能执行此入库操作。');
-  }
-
-  function mayPublish(batch, actor) {
-    return actor.permissions.has(publishGrant) && actor.id === (batch.recipientId || batch.owner);
-  }
-
-  function accessFor(batch, actor) {
-    const role = draftRole(batch,actor);
-    const active = !batch.published;
-    const recipient = role === 'recipient';
-    const ownerWrites = role === 'owner' && actor.permissions.has(writeGrant);
-    const ownerCanEdit = active && ownerWrites && !batch.recipientId;
-    return {
-      role,
-      canEdit:ownerCanEdit || (active && recipient),
-      canPublish:active && mayPublish(batch,actor),
-      canDelete:ownerCanEdit,
-      canHandoff:ownerCanEdit,
-      canReturn:active && Boolean(batch.recipientId) && (ownerWrites || recipient)
-    };
   }
 
   function draftOnly(batch) {
     requireRequest(!batch.published,409,'BATCH_PUBLISHED','该批次已入库。');
-  }
-
-  function assignedElsewhere(batch, actor) {
-    requireRequest(!batch.recipientId || batch.recipientId===actor.id,409,'BATCH_ASSIGNED','该批次已交接，请先收回草稿。');
-  }
-
-  function requireEdit(batch, actor, grant='canEdit') {
-    draftOnly(batch);
-    assignedElsewhere(batch,actor);
-    requirePermission(accessFor(batch,actor)[grant]);
   }
 
   function atRevision(batch, revision) {
@@ -598,28 +581,18 @@ function batching(store, projects, users, catalogueResolver) {
     await store.save({...store.state,batches,publications});
   }
 
-  function recipientsFor(ownerId, projectId) {
-    return [...users.values()].filter(user => user.id!==ownerId &&
-      user.permissions.has(publishGrant) && user.projects.has(projectId));
-  }
-
-  function draftBox(project, actor) {
+  function draftBox(project) {
     const batches = store.state.batches.filter(batch => !batch.published &&
-      batch.projectId===project.projectId && draftRole(batch,actor))
+      batch.projectId===project.projectId && batch.datasetId===project.datasetId)
       .reverse().sort((a,b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
       .map(batch => ({
-        batchId:batch.id,revision:batch.revision,relation:batch.owner===actor.id?'mine':'incoming',
-        ownerId:batch.owner,recipientId:batch.recipientId,fileCount:batch.files.length,
+        batchId:batch.id,revision:batch.revision,fileCount:batch.files.length,
         versionCount:batch.plan.versions.length,
         title:batch.target?.name || batch.plan.versions.find(version=>version.name.trim())?.name.trim() || batch.files[0]?.metadata.name,
         target:batch.target,
         updatedAt:batch.updatedAt
       }));
-    return {
-      limits:draftLimits,permissions:{create:actor.permissions.has(writeGrant)},
-      recipients:recipientsFor(actor.id,project.projectId).map(({id})=>({id})),
-      batches
-    };
+    return {limits:draftLimits,batches};
   }
 
   async function loadFiles(batch) {
@@ -644,20 +617,20 @@ function batching(store, projects, users, catalogueResolver) {
   }
 
   let activeUploads=0;
-  async function upload(request,response,actor,batchId,fileId) {
+  async function upload(request,response,batchId,fileId) {
     requireRequest(id(fileId),400,'INVALID_FILE_ID','文件标识不正确。');
     requireRequest(contentType(request)==='application/octet-stream',415,'INVALID_CONTENT_TYPE','请发送 application/octet-stream。');
     const {name,extension,relativePath}=uploadName(request);
-    const current=draft(batchId,actor);
-    requireEdit(current,actor);
+    const current=draft(batchId);
+    draftOnly(current);
     requireRequest(activeUploads < limits.simultaneousUploads,429,'UPLOAD_BUSY','同时上传过多，请稍后重试。',{'Retry-After':'2'});
     activeUploads++;
     try {
       const data=await readBytes(request,extension==='glb'?limits.fileBytes:limits.imageBytes);
       const sha256=digest(data);
       const uploaded=await store.mutate(async()=>{
-        const batch=draft(batchId,actor);
-        requireEdit(batch,actor);
+        const batch=draft(batchId);
+        draftOnly(batch);
         atRevision(batch,current.revision);
         const previous=batch.files.find(file=>file.metadata.fileId===fileId);
         if (previous) {
@@ -685,11 +658,11 @@ function batching(store, projects, users, catalogueResolver) {
     } finally { activeUploads--; }
   }
 
-  async function modify(request,response,actor,batchId,action) {
+  async function modify(request,response,batchId,action) {
     const body=await readJSON(request);
     const result=await store.mutate(async()=>{
-      const batch=draft(batchId,actor);
-      if (action!=='publish') requireEdit(batch,actor);
+      const batch=draft(batchId);
+      if (action!=='publish') draftOnly(batch);
       if (action==='plan') {
         atRevision(batch,ifMatch(request));
         const revision=batch.revision+1;
@@ -703,9 +676,6 @@ function batching(store, projects, users, catalogueResolver) {
         await persistBatch({...batch,validation});
         return {data:validation};
       }
-      requirePermission(actor.permissions.has(publishGrant));
-      assignedElsewhere(batch,actor);
-      requirePermission(mayPublish(batch,actor));
       const key=request.headers['idempotency-key'];
       requireRequest(typeof key==='string'&&/^[!-~]{1,160}$/.test(key),400,'IDEMPOTENCY_KEY_REQUIRED','请在 Idempotency-Key 中提供发布标识。');
       const intent=JSON.stringify([body?.revision,body?.validationId]);
@@ -737,32 +707,10 @@ function batching(store, projects, users, catalogueResolver) {
     sendJSON(response,200,result.data,result.headers);
   }
 
-  async function handoff(request,response,actor,batchId) {
-    const body=await readJSON(request);
-    const recipientId=body?.recipientId;
-    const revision=await store.mutate(async()=>{
-      const batch=draft(batchId,actor);
-      draftOnly(batch);
-      atRevision(batch,body?.revision);
-      if (recipientId===null && batch.recipientId) {
-        requirePermission(accessFor(batch,actor).canReturn);
-      } else {
-        requireEdit(batch,actor,'canHandoff');
-        if (recipientId===null) return batch.revision;
-        requireRequest(recipientsFor(batch.owner,batch.projectId).some(user=>user.id===recipientId),
-          400,'INVALID_RECIPIENT','请选择有入库发布权限的成员。');
-      }
-      const next=batch.revision+1;
-      await persistBatch({...batch,recipientId:recipientId ?? undefined,revision:next,validation:undefined});
-      return next;
-    });
-    sendJSON(response,200,{revision},{ETag:'"'+revision+'"'});
-  }
-
-  async function discard(request,response,actor,batchId,fileId) {
+  async function discard(request,response,batchId,fileId) {
     const result=await store.mutate(async()=>{
-      const batch=draft(batchId,actor);
-      requireEdit(batch,actor,fileId?'canEdit':'canDelete');
+      const batch=draft(batchId);
+      draftOnly(batch);
       atRevision(batch,ifMatch(request));
       if (!fileId) {
         const batches=store.state.batches.filter(record=>record.id!==batchId);
@@ -783,75 +731,79 @@ function batching(store, projects, users, catalogueResolver) {
     sendJSON(response,200,result,headers);
   }
 
-  async function suggest(request,response,actor,batchId) {
+  async function suggest(request,response,batchId) {
     const body=await readJSON(request);
-    const batch=draft(batchId,actor);
-    requireEdit(batch,actor);
+    const batch=draft(batchId);
+    draftOnly(batch);
     atRevision(batch,body?.revision);
     const plan=body && Object.hasOwn(body,'plan') ? parsePlan(body.plan,batch.target) : batch.plan;
     const suggestions=suggestIngestBindings(plan,batch.files.map(record=>record.metadata));
     sendJSON(response,200,{revision:batch.revision,suggestions});
   }
 
-  return async function handle(request,response,pathname,actor) {
+  return async function handle(request,response,pathname) {
     if (pathname===prefix && ['GET','POST'].includes(request.method)) {
-      const {projectId,datasetId,targetObjectId} = request.method==='GET'
-        ? Object.fromEntries(new URL(request.url,localOrigin).searchParams) : (await readJSON(request)) ?? {};
+      const params = request.method==='GET' ? new URL(request.url,localOrigin).searchParams : null;
+      if (params && !params.toString()) {
+        const entries = [...projects.values()].map(({projectId,datasetId})=>({projectId,datasetId}));
+        return sendJSON(response,200,{projects:entries});
+      }
+      const {projectId,datasetId,targetObjectId} = params
+        ? Object.fromEntries(params) : (await readJSON(request)) ?? {};
       const project=projects.get(projectId);
-      requireRequest(project&&project.datasetId===datasetId&&actor.projects.has(project.projectId),
+      requireRequest(project&&project.datasetId===datasetId,
         404,'PROJECT_NOT_FOUND','找不到可入库的资产目录。');
       if (request.method==='GET') {
-        const result=draftBox(project,actor);
+        const result=draftBox(project);
         if (targetObjectId!==undefined) result.target=(await appendTarget(project,targetObjectId)).target;
         return sendJSON(response,200,result);
       }
-      requirePermission(actor.permissions.has(writeGrant));
       const batch=await store.mutate(async()=>{
         requireRequest(store.state.batches.length < limits.batches,409,'BATCH_LIMIT','服务已达到批次数量上限。');
         const target=targetObjectId===undefined ? undefined : (await appendTarget(project,targetObjectId)).target;
-        const batch={id:randomUUID(),owner:actor.id,projectId:project.projectId,datasetId:project.datasetId,
+        const batch={id:randomUUID(),projectId:project.projectId,datasetId:project.datasetId,
           target,revision:0,files:[],plan:{versions:[],bindings:[]},updatedAt:new Date().toISOString()};
         await store.save({...store.state,batches:[...store.state.batches,batch]});
         return batch;
       });
       return sendJSON(response,201,{batchId:batch.id,revision:0,limits:draftLimits,
-        ownerId:batch.owner,access:accessFor(batch,actor),target:batch.target},{ETag:'"0"'});
+        target:batch.target},{ETag:'"0"'});
     }
 
-    const [,batchId,action,fileId,preview]=/^\/api\/v1\/ingest-batches\/([A-Za-z0-9_-]+)(?:\/(files|plan|suggest|validate|publish|handoff)(?:\/([A-Za-z0-9_-]+)(?:\/(preview))?)?)?$/.exec(pathname)||[];
-    const batch=draft(batchId,actor);
+    const route=/^\/api\/v1\/ingest-batches\/([A-Za-z0-9_-]+)(?:\/(files|plan|suggest|validate|publish)(?:\/([A-Za-z0-9_-]+)(?:\/(preview))?)?)?$/.exec(pathname);
+    requireRequest(route,404,'ROUTE_NOT_FOUND','找不到此入库接口。');
+    const [,batchId,action,fileId,preview]=route;
+    const batch=draft(batchId);
     if (request.method==='GET'&&!action) {
       return sendJSON(response,200,{
         batchId:batch.id,projectId:batch.projectId,datasetId:batch.datasetId,revision:batch.revision,
         limits:draftLimits,plan:batch.plan,
-        ownerId:batch.owner,recipientId:batch.recipientId,access:accessFor(batch,actor),
         target:batch.target,
         files:batch.files.map(file=>file.metadata),validation:batch.validation,
         status:batch.published?'published':'draft',published:batch.published?.result.published
       },{ETag:'"'+batch.revision+'"'});
     }
-    if (request.method==='PUT'&&action==='files'&&fileId&&!preview) return upload(request,response,actor,batchId,fileId);
+    if (request.method==='PUT'&&action==='files'&&fileId&&!preview) return upload(request,response,batchId,fileId);
     if (['GET','HEAD'].includes(request.method)&&action==='files'&&fileId&&preview) {
       const file=batch.files.find(item=>item.metadata.fileId===fileId);
       requireRequest(file&&!file.metadata.error,404,'PREVIEW_NOT_FOUND','找不到文件预览。');
       return store.sendBlob(request,response,file.preview?.filename||file.original,'no-store');
     }
-    if (request.method==='POST'&&action==='suggest'&&!fileId) return suggest(request,response,actor,batchId);
-    if (request.method==='POST'&&action==='handoff'&&!fileId) return handoff(request,response,actor,batchId);
+    if (request.method==='POST'&&action==='suggest'&&!fileId) return suggest(request,response,batchId);
     if (request.method==='DELETE'&&(!action || (action==='files'&&fileId&&!preview))) {
-      return discard(request,response,actor,batchId,fileId);
+      return discard(request,response,batchId,fileId);
     }
     if (!fileId&&(request.method==='PUT'&&action==='plan'||request.method==='POST'&&['validate','publish'].includes(action))) {
-      return modify(request,response,actor,batchId,action);
+      return modify(request,response,batchId,action);
     }
     throw new IngestRequestError(404,'ROUTE_NOT_FOUND','找不到此入库接口。');
   };
 }
 
-export async function createIngestAPI({configFile,staticRoot}) {
-  const {stateDir,projects,users,catalogueResolver}=await loadConfiguration(configFile,staticRoot);
+export async function createIngestAPI(options) {
+  const {stateDir,projects,catalogueResolver}=await loadConfiguration(options);
   const store=await openStore(stateDir);
-  const handleBatch=batching(store,projects,users,catalogueResolver);
+  const handleBatch=batching(store,projects,catalogueResolver);
   const registered=[...projects.values()].sort((a,b)=>b.overlayPath.length-a.overlayPath.length);
 
   return async function handleIngestRequest(request,response,pathname) {
@@ -859,7 +811,7 @@ export async function createIngestAPI({configFile,staticRoot}) {
     const project=registered.find(entry=>pathname.startsWith(entry.overlayPath));
     if (!isBatch&&!project) return false;
     try {
-      if (isBatch) await handleBatch(request,response,pathname,authenticate(request,users));
+      if (isBatch) await handleBatch(request,response,pathname);
       else if (['GET','HEAD'].includes(request.method)) {
         const relative=pathname.slice(project.overlayPath.length);
         const visible=store.state.publications.filter(publication=>publication.key===project.key);

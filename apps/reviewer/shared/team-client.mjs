@@ -1,4 +1,4 @@
-const browserActor = {id: 'local', name: '本机用户'};
+export const localReviewActor = Object.freeze({id: 'local', name: '本机用户'});
 const emptyAssets = () => Object.create(null);
 
 export const teamLimits = Object.freeze({
@@ -127,8 +127,6 @@ export function createTeamClient({projectId, datasetId, fetch: request = globalT
   const scope = validateTeamScope(projectId, datasetId);
   const key = `assets-workbench:local-team:${scope}`;
   const target = '/api/workbench?' + new URLSearchParams({projectId, datasetId});
-  let token = '';
-  let generation = 0;
   let mode;
   let backendSeen = false;
   let queue = Promise.resolve();
@@ -140,36 +138,25 @@ export function createTeamClient({projectId, datasetId, fetch: request = globalT
     const state = text == null ? newTeamState() : JSON.parse(text);
     assertTeamState(state);
     if (action) {
-      applyTeamAction(state, browserActor.id, action);
+      applyTeamAction(state, localReviewActor.id, action);
       const json = JSON.stringify(state);
       if (new TextEncoder().encode(json).length > teamLimits.stateBytes) throw new Error('本机协作记录已达容量上限');
       browserStorage.setItem(key, json);
     }
-    return teamSnapshot(state, browserActor, 'local');
+    return teamSnapshot(state, localReviewActor, 'local');
   }
-  function checkGeneration(expected) {
-    if (expected !== generation) throw new DOMException('Team session changed', 'AbortError');
-  }
-  async function run(action, expected) {
-    checkGeneration(expected);
+  async function run(action) {
     if (mode === 'local' && action) return local(action);
     const headers = {Accept: 'application/json'};
-    if (token) headers.Authorization = `Bearer ${token}`;
     if (action) headers['Content-Type'] = 'application/json';
     const response = await request(target, {
       method: action ? 'POST' : 'GET',
       headers, credentials: 'same-origin', redirect: 'error', cache: 'no-store',
       ...(action ? {body: JSON.stringify(action)} : {})
     });
-    checkGeneration(expected);
-    if ((response.status === 404 || response.status === 405) && !backendSeen && !token && !action) {
+    if ((response.status === 404 || response.status === 405) && !backendSeen && !action) {
       mode = 'local';
       return local();
-    }
-    if (response.status === 401) {
-      backendSeen = true;
-      mode = 'locked';
-      return {mode, actor: null, assets: emptyAssets()};
     }
     if (!response.ok) {
       let error;
@@ -177,7 +164,6 @@ export function createTeamClient({projectId, datasetId, fetch: request = globalT
       throw new Error(error || `协作请求失败（HTTP ${response.status}）`);
     }
     const data = await response.json();
-    checkGeneration(expected);
     if (data?.mode !== 'shared' || !data.actor || !data.assets || typeof data.assets !== 'object') {
       throw new Error('服务未返回有效的团队记录');
     }
@@ -186,25 +172,15 @@ export function createTeamClient({projectId, datasetId, fetch: request = globalT
     return data;
   }
   function enqueue(raw) {
-    const expected = generation;
     const result = queue.then(async () => {
       const action = raw && parseTeamAction(raw);
-      if (action && !mode) await run(null, expected);
-      if (mode === 'locked' && action) {
-        checkGeneration(expected);
-        return {mode, actor: null, assets: emptyAssets()};
-      }
-      return run(action, expected);
+      if (action && !mode) await run(null);
+      return run(action);
     });
     queue = result.catch(() => {});
     return result;
   }
   return {
-    setToken(value) {
-      token = String(value ?? '').trim();
-      generation++;
-      mode = undefined;
-    },
     load: () => enqueue(null),
     vote: input => enqueue({...input, type: 'vote'}),
     comment: input => enqueue({...input, type: 'comment'}),

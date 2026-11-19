@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import {get} from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
@@ -28,14 +30,31 @@ for(const p of all){
  if(p.endsWith('.glb'))assert(p.startsWith(app+path.sep),'only own demo GLBs');
 }
 const port=30000+Math.floor(Math.random()*20000);
-const server=startLocalTestServer(path.join(app,'server.mjs'),{port});
+const state=fs.mkdtempSync(path.join(os.tmpdir(),'assets-local-release-'));
+const server=startLocalTestServer(path.join(app,'server.mjs'),{port,
+ env:{ASSETS_STATE_DIR:state,ASSETS_INGEST_CONFIG:'',ASSETS_TEAM_CONFIG:''}});
 try{
  await server.waitUntilReady();
  const base=`http://127.0.0.1:${port}`;
  let res=await fetch(base+'/');assert.equal(res.status,200);assert((await res.text()).includes('资产检查站'));
  res=await fetch(base+'/project-directory.json');assert.equal((await res.json()).projects.length,2);
  res=await fetch(base+'/demo-a/assets/cube.glb',{method:'HEAD'});assert.equal(res.status,200);assert.equal((await res.arrayBuffer()).byteLength,0);
+ res=await fetch(base+'/agent.md');assert.equal(res.status,200);assert((await res.text()).includes('/api/v1/ingest-batches'));
+ const ingest='/api/v1/ingest-batches';
+ res=await fetch(base+ingest);assert.equal(res.status,200);assert.equal((await res.json()).projects.length,2);
+ const draftBody=JSON.stringify({projectId:'demo-a',datasetId:'example-v1'});
+ const create=extra=>fetch(base+ingest,{method:'POST',headers:{'Content-Type':'application/json',...extra},body:draftBody});
+ res=await create({Origin:'http://untrusted.invalid'});assert.equal(res.status,403);
+ res=await create({'Sec-Fetch-Site':'same-site'});assert.equal(res.status,403);
+ const remoteHostStatus=await new Promise((resolve,reject)=>{
+  get(base+ingest,{headers:{Host:'untrusted.invalid'}},response=>{
+   response.resume();
+   resolve(response.statusCode);
+  }).on('error',reject);
+ });
+ assert.equal(remoteHostStatus,403);
+ res=await create({Origin:base,'Sec-Fetch-Site':'same-origin'});assert.equal(res.status,201);
  res=await fetch(base+'/',{method:'POST'});assert.equal(res.status,405);
  res=await fetch(base+'/missing.json');assert.equal(res.status,404);
-}finally{await server.stop();}
-console.log(JSON.stringify({passed:true,appVerification:JSON.parse(check.stdout),sampleGLBParses:2,documentLinksChecked:links,files:all.length,localHTTP:['GET index','GET directory','HEAD model','reject POST','missing 404'],hostedBackendBuild:'not-run-reference-only',gpu:'not-run',networkDependencyAudit:'not-comprehensive'}));
+}finally{await server.stop();fs.rmSync(state,{recursive:true,force:true,maxRetries:2});}
+console.log(JSON.stringify({passed:true,appVerification:JSON.parse(check.stdout),sampleGLBParses:2,documentLinksChecked:links,files:all.length,localHTTP:['GET index','GET directory','HEAD model','reject POST','missing 404','agent guide','local ingest','loopback request boundary'],hostedBackendBuild:'not-run-reference-only',gpu:'not-run',networkDependencyAudit:'not-comprehensive'}));

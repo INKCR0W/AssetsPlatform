@@ -1,14 +1,13 @@
-import {createHash, randomUUID, timingSafeEqual} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {open, readFile, realpath, rename, stat, unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {
-  applyTeamAction, assertTeamState, newTeamState, parseTeamAction, teamLimits,
+  applyTeamAction, assertTeamState, localReviewActor, newTeamState, parseTeamAction, teamLimits,
   TeamInputError, teamSnapshot, validTeamId, validateTeamScope
 } from './shared/team-client.mjs';
 
 const bodyBytes = 8 * 1024;
 const configBytes = 128 * 1024;
-const tokenPattern = /^[A-Za-z0-9_-]{32,128}$/;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -36,9 +35,8 @@ async function readConfiguration(configFile, staticRoot) {
   if (inside(root, location)) throw new Error('Team configuration must be outside the served asset directory');
   const config = await readJSONFile(location, configBytes);
   if (typeof config?.stateFile !== 'string' || !config.stateFile ||
-      !Array.isArray(config.projects) || !config.projects.length ||
-      !Array.isArray(config.users) || !config.users.length || config.users.length > 100) {
-    throw new Error('Team configuration must include stateFile, projects and 1–100 users');
+      !Array.isArray(config.projects) || !config.projects.length) {
+    throw new Error('Review configuration must include stateFile and projects');
   }
   const target = path.resolve(path.dirname(location), config.stateFile);
   const stateFile = path.join(await realpath(path.dirname(target)), path.basename(target));
@@ -52,17 +50,13 @@ async function readConfiguration(configFile, staticRoot) {
     if (error.code !== 'ENOENT') throw error;
   }
   const scopes = new Set(config.projects.map(row => validateTeamScope(row?.projectId, row?.datasetId)));
-  const users = new Map(), hashes = new Set();
-  for (const row of config.users) {
-    if (!validTeamId(row?.id) || users.has(row.id) || typeof row.name !== 'string' ||
-        !row.name.trim() || row.name.trim().length > 60 || /[\u0000-\u001f\u007f]/u.test(row.name) ||
-        !/^[a-f0-9]{64}$/.test(row.tokenHash) || hashes.has(row.tokenHash)) {
-      throw new Error('Invalid or duplicate team user');
-    }
-    users.set(row.id, {id: row.id, name: row.name.trim(), hash: Buffer.from(row.tokenHash, 'hex')});
-    hashes.add(row.tokenHash);
+  const legacyNames = new Map();
+  for (const row of Array.isArray(config.users) ? config.users : []) {
+    if (!validTeamId(row?.id) || typeof row.name !== 'string' || /[\u0000-\u001f\u007f]/u.test(row.name)) continue;
+    const name = row.name.trim();
+    if (name && name.length <= 60) legacyNames.set(row.id, name);
   }
-  return {stateFile, scopes, users};
+  return {stateFile, scopes, legacyNames};
 }
 
 async function readState(stateFile) {
@@ -105,17 +99,6 @@ async function persist(file, data) {
   }
 }
 
-function authenticate(req, users) {
-  const authorization = req.headers.authorization;
-  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) return null;
-  const token = authorization.slice('Bearer '.length);
-  if (!tokenPattern.test(token)) return null;
-  const hash = createHash('sha256').update(token).digest();
-  let actor = null;
-  for (const user of users.values()) if (timingSafeEqual(hash, user.hash)) actor = user;
-  return actor;
-}
-
 function sendJSON(res, status, body, headers) {
   if (res.destroyed) return;
   res.writeHead(status, {
@@ -156,15 +139,15 @@ function readBody(req) {
 }
 
 export async function createTeamAPI({configFile, staticRoot}) {
-  const {stateFile, scopes, users} = await readConfiguration(configFile, staticRoot);
+  const {stateFile, scopes, legacyNames} = await readConfiguration(configFile, staticRoot);
   let state = await readState(stateFile);
   let writes = Promise.resolve();
-  const nameOf = id => users.get(id)?.name ?? '已离开团队';
+  const nameOf = id => id === localReviewActor.id ? localReviewActor.name : legacyNames.get(id) ?? id;
 
-  function write(scope, actor, action) {
+  function write(scope, action) {
     const operation = writes.then(async () => {
       const records = structuredClone(state.scopes[scope] ?? newTeamState());
-      applyTeamAction(records, actor.id, action);
+      applyTeamAction(records, localReviewActor.id, action);
       const next = {...state, scopes: {...state.scopes, [scope]: records}};
       await persist(stateFile, next);
       state = next;
@@ -180,14 +163,12 @@ export async function createTeamAPI({configFile, staticRoot}) {
       if (!['GET', 'POST'].includes(req.method)) {
         return sendJSON(res, 405, {error: '不支持该方法'}, {Allow: 'GET, POST'});
       }
-      const actor = authenticate(req, users);
-      if (!actor) return sendJSON(res, 401, {mode: 'locked', actor: null, assets: {}}, {'WWW-Authenticate': 'Bearer'});
       const scope = validateTeamScope(url.searchParams.get('projectId'), url.searchParams.get('datasetId'));
       if (!scopes.has(scope)) return sendJSON(res, 403, {error: '团队未登记此目录'});
       const records = req.method === 'POST'
-        ? await write(scope, actor, parseTeamAction(await readBody(req)))
+        ? await write(scope, parseTeamAction(await readBody(req)))
         : state.scopes[scope] ?? newTeamState();
-      sendJSON(res, 200, teamSnapshot(records, actor, 'shared', nameOf));
+      sendJSON(res, 200, teamSnapshot(records, localReviewActor, 'shared', nameOf));
     } catch (error) {
       if (error instanceof HttpError || error instanceof TeamInputError) {
         sendJSON(res, error.status ?? 400, {error: error.message});

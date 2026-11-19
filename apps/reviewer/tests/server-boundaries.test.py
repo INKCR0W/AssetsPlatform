@@ -19,8 +19,11 @@ class Boundaries(unittest.TestCase):
             with self.subTest(server=server), tempfile.TemporaryDirectory() as tmp:
                 base = Path(tmp)
                 root = base / 'public'
-                root.mkdir()
-                shutil.copy(SOURCE / server, root / server)
+                if server == 'server.mjs':
+                    shutil.copytree(SOURCE, root, ignore=shutil.ignore_patterns('tests','__pycache__'))
+                else:
+                    root.mkdir()
+                    shutil.copy(SOURCE / server, root / server)
                 (root / 'index.html').write_text('safe')
                 (base / 'outside.txt').write_text('synthetic-not-private')
                 (root / '.hidden').write_text('synthetic-hidden')
@@ -33,7 +36,10 @@ class Boundaries(unittest.TestCase):
                 with socket.socket() as sock:
                     sock.bind(('127.0.0.1', 0))
                     port = sock.getsockname()[1]
-                process = subprocess.Popen(command + [str(root / server)], env={**os.environ, 'PORT': str(port)}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                env = {**os.environ, 'PORT': str(port), 'ASSETS_STATE_DIR': str(base / 'state'),
+                       'ASSETS_INGEST_CONFIG': '', 'ASSETS_TEAM_CONFIG': ''}
+                process = subprocess.Popen(command + [str(root / server)], env=env,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     url = f'http://127.0.0.1:{port}'
                     for attempt in range(100):

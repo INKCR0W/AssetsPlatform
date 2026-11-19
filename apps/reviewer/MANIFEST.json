@@ -6,8 +6,8 @@
       "sha256": "524a0f9a6fc5b43b5acf76fa0d2397f1776c9a7bb88d214ded23f740befb8cef"
     },
     "README.md": {
-      "bytes": 772,
-      "sha256": "dbfaf974ad34b640c4ad441d368a7a11db3329f4f7df43f57bbb5101e6248acf"
+      "bytes": 885,
+      "sha256": "4d723454711876600ec54326a912e847aad3024c6a6f060c03cef42cfe63ff4c"
     },
     "THIRD_PARTY_NOTICES.md": {
       "bytes": 611,
@@ -17,9 +17,13 @@
       "bytes": 5454,
       "sha256": "a187aadb9627cb22a2efb9b3b16d6b46404857828eaf6772cd3d13c3e614c03d"
     },
+    "agent.md": {
+      "bytes": 3117,
+      "sha256": "92c738e72495c5ba8a2206ff360c1fac8f49a91be304a07f1679f9005462705c"
+    },
     "app.mjs": {
-      "bytes": 122769,
-      "sha256": "d2b1908ef09559e4f7b3a7b1e1b49d39a3934d9b45ada2598ba29334365b1fac"
+      "bytes": 123331,
+      "sha256": "e88c1e5ddcee907de2f5d3f045444901123c47d620c3859b5ec0d02224490940"
     },
     "demo-a/assets/canopy-rules.json": {
       "bytes": 55,
@@ -106,8 +110,8 @@
       "sha256": "6448ab91a761656f3f6197736fd9fa1c64082afc905e83d0f73d01f43f88c9fc"
     },
     "ingest-api.mjs": {
-      "bytes": 44516,
-      "sha256": "54b72106930097d0934c90ddeadeefa1ec8ed53b9c476b0273a6c7d573de611e"
+      "bytes": 41367,
+      "sha256": "b148bb1d0e2ab5e32343a3b5be2b1bf502d2e492aea54b3a8a3b05857e637575"
     },
     "ingest-publication.mjs": {
       "bytes": 14060,
@@ -118,16 +122,16 @@
       "sha256": "226451176d7beb01666087c3a7a19d9b7c165d22b4b51b3afc5c37d777b54988"
     },
     "ingest.css": {
-      "bytes": 11652,
-      "sha256": "dabd2331731ab27654d7e8c0e2d54d30144ded8443f8762ece6670e7807539ce"
+      "bytes": 10649,
+      "sha256": "b26d71c5c527ee5e946ceb1f01c5595e70be94ec4eb821a4ddde42491f784442"
     },
     "ingest.html": {
-      "bytes": 6361,
-      "sha256": "77ab5d341872602f494f3cde3f46142be91d71bfb258d83a013f5df0c64ae10a"
+      "bytes": 5442,
+      "sha256": "9a01fe76187887203098d782c54f423cd67c40f05d0cb4da979a5cff41dc4625"
     },
     "ingest.mjs": {
-      "bytes": 45567,
-      "sha256": "578d7d294f2b9ab9a0cfcfdd3ad28833ed126fc9bbf3460d6e51c5136665698d"
+      "bytes": 41134,
+      "sha256": "518d6784a617836668a7d89c055ff4342d303d09f7e1d6d6d8ceba2e54abf9b5"
     },
     "package.json": {
       "bytes": 325,
@@ -158,8 +162,8 @@
       "sha256": "72bec27a654426c509fa958307ceffa6e7386f5b518c94ef2f158e6c8976a465"
     },
     "server.mjs": {
-      "bytes": 3362,
-      "sha256": "c8b67cadcbc027c9384d7a414c90e9d91d3a9ce8ca727766c83b38742c959010"
+      "bytes": 4301,
+      "sha256": "100ccd9391a2594386baa8ac5378f98b3485641f10e0cf09d97f666bdeee2237"
     },
     "shared/animation-contract.mjs": {
       "bytes": 1483,
@@ -178,8 +182,8 @@
       "sha256": "1a153fcca16fe4a7ad6581bb5c86a117621e6b34209214d30b92cd66ab983311"
     },
     "shared/download-workbench.mjs": {
-      "bytes": 28833,
-      "sha256": "e925e5a70e25bbd8ed4a03d2472f68d49c2e7aa79b9fc4038a542090b0fb7218"
+      "bytes": 27572,
+      "sha256": "1105ae695a5b75e0f6c39e220ee279365f1576c8e08cc2b956e6d9e2a07387c0"
     },
     "shared/json-budget.mjs": {
       "bytes": 2812,
@@ -242,8 +246,8 @@
       "sha256": "febaae60dc68adcf75e138024c439e84c455369df8715c4f31ffad182d379d47"
     },
     "shared/team-client.mjs": {
-      "bytes": 8800,
-      "sha256": "49ac859a7d850365348c71ced485002eff932ee5ad453b7c1e3f261027cd74e5"
+      "bytes": 8027,
+      "sha256": "65400c58bccf4729c4a3270fe956e5a1f58954b7232d61472b1d7cbf008e7191"
     },
     "shared/unity-bundle.mjs": {
       "bytes": 2554,
@@ -262,8 +266,8 @@
       "sha256": "c6c29824ff3c70dd1cb899fba8ba6031cd0a5f8d2849de432900b069297c30ac"
     },
     "team-api.mjs": {
-      "bytes": 8527,
-      "sha256": "f3f162f4713b1333a4c510ed0afd53065f6c9d55fe8a495ac9d3c7f6fcf49a7a"
+      "bytes": 7562,
+      "sha256": "f0b35e5eda44c33272b76ea3089d6de7dc95a554bd5441935e4362eaacfc00c0"
     },
     "tests/asset-package.test.mjs": {
       "bytes": 12869,
@@ -290,12 +294,12 @@
       "sha256": "69ab9ca7f701e4b1860be5009dc9e8cf046f9e5f9606d07f30759961129e5736"
     },
     "tests/server-boundaries.test.py": {
-      "bytes": 2999,
-      "sha256": "dbc297d523fb3958790abf58a73f7983348c23133a0180315e2a7e9f13efc5a6"
+      "bytes": 3363,
+      "sha256": "8a3c9e08dfcde9e1215ea49d7d83cc91cd56e88c6fc9ccb396ce855bce284e35"
     },
     "tests/team-api.test.mjs": {
-      "bytes": 7960,
-      "sha256": "ec0584badfa8c76c91decaf5f1658afbb4eee81f25f779bda7d9103e9c4143f4"
+      "bytes": 8234,
+      "sha256": "df7041f3e82284493c0f518fb0f41f4600f588d8e9b6ae6e05a5093d27b335e8"
     },
     "tests/unity-bundle.test.mjs": {
       "bytes": 6161,

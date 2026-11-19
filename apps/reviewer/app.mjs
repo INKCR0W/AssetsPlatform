@@ -503,7 +503,7 @@ async function init() {
       }
       return {...item, catalogOrder:index};
     });
-    if (!objects.length) throw Error('物件目录暂不可用');
+    if (!objects.length && !projectData.ingestEnabled) throw Error('物件目录暂不可用');
     diagnostics = new Map((projectData.diagnostics?.objects || []).filter(d => objects.some(item => item.id === d.objectId && item.sourceId === d.sourceId)).map(d => [d.objectId, d]));
     for (const object of objects) {
       object.relatedIds = allRelatedIds(object);
@@ -795,7 +795,9 @@ function previewLabel(item) {
 function imageHTML(item, original = false, renderMode = false) {
   if (renderMode && item.modelUrl) {
     const cached = previewQueue?.peek(thumbnailKey(item));
-    return `<span class="rendered-preview" data-render-id="${esc(item.id)}"><img src="${esc(cached || item.previewUrl || assetURL(config, config.pendingPreview || 'assets/preview-pending.svg'))}" alt="${esc(item.name)}" loading="lazy" decoding="async"><span class="render-preview-state" hidden></span></span>`;
+    const source = cached || item.previewUrl || (config.pendingPreview && assetURL(config, config.pendingPreview));
+    const imageSource = source ? `src="${esc(source)}"` : 'hidden';
+    return `<span class="rendered-preview" data-render-id="${esc(item.id)}"><img ${imageSource} alt="${esc(item.name)}" loading="lazy" decoding="async"><span class="render-preview-state" ${source ? 'hidden' : ''}>生成缩略图中</span></span>`;
   }
   const url = original ? item.originalUrl || item.previewUrl : item.previewUrl;
   return url ? `<img src="${esc(url)}" alt="${esc(item.name)}" loading="lazy" decoding="async">` : '<div class="placeholder-preview">无预览</div>';
@@ -896,7 +898,8 @@ function render() {
       }
     };
     const image = card.querySelector('img');
-    if (image) image.onerror = () => image.replaceWith(Object.assign(document.createElement('div'), {
+    const previewItem = modelLibrary ? galleryModel(item) : item;
+    if (image && !previewItem.modelUrl) image.onerror = () => image.replaceWith(Object.assign(document.createElement('div'), {
       className: 'placeholder-preview',
       textContent: '缩略图读取失败'
     }));
@@ -2284,7 +2287,11 @@ function scheduleCardPreviews() {
     const key = thumbnailKey(item, id);
     if (submitted.get(node) === key) return;
     submitted.set(node, key);
-    previewQueue.request(thumbnailKey(item, id), item.modelUrl, {
+    image.onerror = () => {
+      image.hidden = true;
+      label.hidden = false;
+    };
+    previewQueue.request(key, item.modelUrl, {
       profile,
       materialRules,
       modelAsset: item.modelAsset,
@@ -2292,7 +2299,14 @@ function scheduleCardPreviews() {
     }, result => {
       if (epoch !== thumbnailEpoch || !node.isConnected || submitted.get(node) !== key) return;
       if (result.status === 'ready') {
+        image.onerror = () => {
+          image.hidden = true;
+          label.textContent = '缩略图读取失败';
+          label.className = 'render-preview-state error';
+          label.hidden = false;
+        };
         image.src = result.url;
+        image.hidden = false;
         label.hidden = true;
       } else {
         label.textContent = '缩略图生成失败';

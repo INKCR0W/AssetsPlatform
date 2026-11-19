@@ -3,10 +3,10 @@ import {spawn} from 'node:child_process';
 const STARTUP_TIMEOUT_MS = 5000;
 const STDERR_TAIL_LENGTH = 4096;
 
-export function startLocalTestServer(script, {cwd, port}) {
+export function startLocalTestServer(script, {cwd, port, env={}}) {
   const child = spawn(process.execPath, [script], {
     cwd,
-    env: {...process.env, PORT: String(port)},
+    env: {...process.env, ...env, PORT: String(port)},
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

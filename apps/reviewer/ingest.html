@@ -13,14 +13,10 @@
   <header class="topbar">
     <div class="top-width">
       <a class="brand" id="catalog-link" href="./">资产检查站</a>
-      <button class="button quiet" id="disconnect" hidden>退出</button>
+      <a class="button quiet" id="agent-guide" href="/agent.md" hidden>Agent 接入</a>
     </div>
   </header>
   <main>
-    <form class="connection" id="connection">
-      <label>入库令牌<input type="password" id="token" autocomplete="off" required></label>
-      <button class="button primary" id="connect">进入</button>
-    </form>
     <p id="notice" role="status" class="notice" hidden></p>
     <div id="stale-plan" class="notice error stale-plan" hidden>
       <p role="status">服务器草稿已更新</p>
@@ -41,32 +37,16 @@
           <input id="folder-input" type="file" webkitdirectory multiple hidden accept=".glb,.png,.jpg,.jpeg">
         </div>
       </div>
-      <section id="draft-box" class="panel draft-box" aria-label="草稿箱" hidden>
-        <div class="draft-group">
-          <h2>待我发布 <span class="count" id="incoming-count"></span></h2>
-          <ul class="draft-list" id="incoming-drafts"></ul>
-        </div>
-        <div class="draft-group">
-          <h2>我的草稿 <span class="count" id="own-count"></span></h2>
-          <ul class="draft-list" id="own-drafts"></ul>
-        </div>
+      <section id="draft-box" class="panel draft-box" aria-labelledby="draft-title" hidden>
+        <h2 id="draft-title">草稿 <span class="count" id="draft-count"></span></h2>
+        <ul class="draft-list" id="drafts"></ul>
       </section>
-      <div class="handoff-bar" id="handoff-bar" hidden>
-        <p id="handoff-status" hidden></p>
-        <form id="handoff-form" hidden>
-          <label class="sr-only" for="handoff-recipient">接收人</label>
-          <select id="handoff-recipient" required></select>
-          <button class="button subtle compact" type="submit">交接草稿</button>
-        </form>
-        <button class="button subtle compact" id="undo-handoff" hidden></button>
-        <button class="button quiet compact danger" id="discard-draft" hidden>丢弃草稿</button>
-      </div>
       <div id="draft-editor">
         <div class="workspace-grid">
           <div class="work-col">
             <section class="panel" aria-labelledby="staging-title">
               <div class="dropzone" id="dropzone">
-                <div><h2 id="staging-title">文件 <span class="count" id="file-count">0</span></h2><p id="drop-help">拖放 GLB、PNG、JPG</p></div>
+                <div><h2 id="staging-title">文件 <span class="count" id="file-count">0</span></h2><p>拖放 GLB、PNG、JPG</p></div>
                 <button class="button subtle compact" id="toggle-files" aria-expanded="false" aria-controls="file-list">查看文件</button>
               </div>
               <div class="files" id="file-list" hidden></div>
@@ -115,6 +95,7 @@
         <div class="publish-bar">
           <strong id="publish-summary" role="status">未添加文件</strong>
           <div class="actions">
+            <button class="button quiet danger" id="discard-draft" hidden>丢弃草稿</button>
             <button class="button subtle" id="save" disabled>保存</button>
             <button class="button primary" id="publish" disabled>入库</button>
             <a class="button primary" id="view-published" hidden>查看目录</a>

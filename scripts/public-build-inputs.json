@@ -2,6 +2,7 @@
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
   "adapters/indexed-data.mjs",
+  "agent.md",
   "app.mjs",
   "demo-a/assets/canopy-rules.json",
   "demo-a/assets/catalog.json",

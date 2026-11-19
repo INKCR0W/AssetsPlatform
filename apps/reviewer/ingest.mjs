@@ -21,15 +21,11 @@ const maxFolderEntries = 2048;
 const maxPathSegments = 17;
 const files = new Map();
 const suggestions = new Map();
-let token = '';
 let batchId = null;
 let revision = 0;
 let draftLimits;
 let draftBox;
 let draftBoxOpen = false;
-let access;
-let ownerId;
-let recipientId;
 let target;
 let plan = {versions:[], bindings:[]};
 let activeVersion, validation, previewController, viewer, progress;
@@ -56,16 +52,8 @@ function button(label, handler, classes = 'button subtle compact') {
   return node;
 }
 
-function canEditDraft() {
-  return batchId ? Boolean(access?.canEdit) : Boolean(draftBox?.permissions.create);
-}
-
 function editingLocked() {
-  return busy || published || stale || !canEditDraft();
-}
-
-function canUpload() {
-  return published ? Boolean(draftBox?.permissions.create) : canEditDraft();
+  return busy || published || stale || !draftLimits;
 }
 
 function field(control, label, key, onChange) {
@@ -134,7 +122,7 @@ function revisionHeaders() {
 }
 
 async function request(method, url, body, {headers = {}, signal} = {}) {
-  const init = {method, signal, redirect:'error', headers:{...headers, Authorization:'Bearer ' + token}};
+  const init = {method, signal, redirect:'error', headers:{...headers}};
   if (body instanceof Blob) init.body = body;
   else if (body !== undefined) {
     init.body = JSON.stringify(body);
@@ -189,13 +177,10 @@ async function readBatch(id) {
   return batch;
 }
 
-function applyBatch(batch, {preserveUrl = false} = {}) {
+function applyBatch(batch) {
   batchId = batch.batchId;
   revision = batch.revision;
   draftLimits = batch.limits || draftBox?.limits;
-  access = batch.access;
-  ownerId = batch.ownerId;
-  recipientId = batch.recipientId;
   target = batch.target;
   plan = batch.plan || {versions:[], bindings:[]};
   validation = batch.validation || null;
@@ -210,7 +195,7 @@ function applyBatch(batch, {preserveUrl = false} = {}) {
   suggestions.clear();
   for (const file of batch.files || []) files.set(file.fileId, file);
   openFiles(files.size > 0 && !plan.versions.length);
-  if (!preserveUrl) rememberBatch(batchId);
+  rememberBatch(batchId);
 }
 
 function clearBatch({showBox = false, nextTarget} = {}) {
@@ -227,7 +212,7 @@ async function newBatch() {
 }
 
 function isDraftConflict(error) {
-  if (['STALE_REVISION','BATCH_PUBLISHED','BATCH_ASSIGNED'].includes(error.code)) return true;
+  if (['STALE_REVISION','BATCH_PUBLISHED'].includes(error.code)) return true;
   if (error.code !== 'BATCH_NOT_FOUND' || !batchId) return false;
   const currentPath = endpoint();
   return error.requestUrl === currentPath || error.requestUrl?.startsWith(currentPath + '/');
@@ -255,35 +240,23 @@ async function withBusy(operation) {
   }
 }
 
-$('connection').onsubmit = event => {
-  event.preventDefault();
-  const value = $('token').value.trim();
-  if (!value || !projectId || !datasetId) return;
-  withBusy(async () => {
-    token = value;
-    const prior = locationUrl.searchParams.get('batch');
+async function openWorkspace() {
+  const prior = locationUrl.searchParams.get('batch');
+  await refreshDraftBox(prior ? undefined : locationUrl.searchParams.get('targetObjectId'));
+  if (prior) {
     try {
-      await refreshDraftBox(prior ? undefined : locationUrl.searchParams.get('targetObjectId'));
-      draftBoxOpen = !prior && ((!draftBox.target && draftBox.batches.length > 0) || !draftBox.permissions.create);
-      if (prior) {
-        try {
-          applyBatch(await readBatch(prior));
-          refreshPreview();
-        } catch (error) {
-          if (error.status !== 404) throw error;
-          clearBatch({showBox:true});
-          notice(error.message, true);
-        }
-      } else applyBatch({target:draftBox.target});
-      $('token').value = '';
+      applyBatch(await readBatch(prior));
+      refreshPreview();
     } catch (error) {
-      token = '';
-      draftBox = undefined;
-      applyBatch({}, {preserveUrl:true});
-      throw error;
+      if (error.status !== 404) throw error;
+      clearBatch({showBox:true});
+      notice(error.message, true);
     }
-  });
-};
+    return;
+  }
+  applyBatch({target:draftBox.target});
+  draftBoxOpen = !target && draftBox.batches.length > 0;
+}
 
 function stage({file,relativePath}) {
   const id = 'file-' + crypto.randomUUID();
@@ -397,7 +370,7 @@ function openFiles(open) {
 }
 
 function takeFiles(readSelection) {
-  if (busy || stale || !canUpload()) return;
+  if (busy || stale || !draftLimits) return;
   withBusy(async () => {
     const eligible = (await readSelection()).filter(({file}) => acceptedFile.test(file.name));
     if (!eligible.length) return notice('未找到 GLB、PNG 或 JPG 文件。', true);
@@ -480,25 +453,6 @@ async function openDraft(id) {
   refreshPreview();
 }
 
-async function changeHandoff(to) {
-  await savePlan();
-  const returning = access.role === 'recipient';
-  const {revision:nextRevision} = await requestJSON('POST', endpoint('/handoff'), {revision,recipientId:to});
-  revision = nextRevision;
-  validation = null;
-  if (returning) {
-    clearBatch({showBox:true});
-  } else {
-    stale = true;
-    const previousVersion = activeVersion;
-    applyBatch(await readBatch(batchId));
-    if (findVersion(previousVersion)) activeVersion = previousVersion;
-    refreshPreview();
-  }
-  await refreshDraftBox();
-  notice(to ? '草稿已交接给 ' + to : returning ? '已退回给提交人' : '已撤回交接');
-}
-
 async function deleteDraft() {
   if (!window.confirm('丢弃本批草稿及其中上传的文件？')) return;
   await request('DELETE', endpoint(), undefined, {headers:revisionHeaders()});
@@ -579,7 +533,7 @@ function renderFiles() {
       texture.disabled = locked || plan.bindings.length >= bindingLimit;
       row.append(texture);
     }
-    if (access?.canEdit && !published) {
+    if (!published) {
       const remove = button('删除文件', () => withBusy(() => deleteFile(file)), 'button quiet compact danger');
       remove.disabled = locked;
       remove.setAttribute('aria-label', '删除文件 ' + filePathLabel(file));
@@ -753,9 +707,10 @@ function renderSummary() {
   $('publish-summary').textContent = progress ||
     [files.size + ' 个文件', plan.versions.length + ' 个版本', status].filter(Boolean).join(' · ');
   $('save').disabled = editingLocked() || !dirty;
-  $('publish').disabled = busy || published || stale || !access?.canPublish || !validation || errors > 0;
-  $('save').hidden = published || !canEditDraft();
-  $('publish').hidden = published || !access?.canPublish;
+  $('publish').disabled = editingLocked() || !validation || errors > 0;
+  $('save').hidden = $('publish').hidden = published;
+  $('discard-draft').hidden = !batchId || published;
+  $('discard-draft').disabled = editingLocked();
   const view = $('view-published');
   view.hidden = !published;
   view.href = target ? targetCatalogueUrl(publication?.[0]?.id) : catalogueUrl.href;
@@ -773,9 +728,12 @@ function renderSummary() {
     validation ? '无问题' : '未校验', 'empty')]));
 }
 
-function renderDraftGroup(relation, listId, countId) {
-  const batches = draftBox.batches.filter(batch => batch.relation === relation);
-  $(countId).textContent = batches.length;
+function renderDraftBox() {
+  $('draft-box').hidden = !draftBoxOpen || !draftBox;
+  $('show-drafts').setAttribute('aria-expanded', String(!$('draft-box').hidden));
+  if ($('draft-box').hidden) return;
+  const batches = draftBox.batches;
+  $('draft-count').textContent = batches.length;
   const rows = batches.map(batch => {
     const row = element('li');
     const current = batch.batchId === batchId;
@@ -785,8 +743,6 @@ function renderDraftGroup(relation, listId, countId) {
     const title = batch.target?.name || batch.title || '未命名草稿 · ' + batch.batchId.slice(0, 8);
     const meta = [batch.fileCount + ' 个文件', batch.versionCount + ' 个版本'];
     if (batch.target) meta.unshift('追加版本');
-    if (relation === 'incoming') meta.push('来自 ' + batch.ownerId);
-    else if (batch.recipientId) meta.push('已交给 ' + batch.recipientId);
     if (batch.updatedAt) {
       const updated = new Date(batch.updatedAt);
       if (Number.isFinite(updated.getTime())) meta.push(updated.toLocaleString());
@@ -797,58 +753,14 @@ function renderDraftGroup(relation, listId, countId) {
     row.append(open);
     return row;
   });
-  $(listId).replaceChildren(...(rows.length ? rows : [element('li','没有草稿','empty')]));
-}
-
-function renderDraftBox() {
-  $('draft-box').hidden = !draftBoxOpen || !draftBox;
-  $('show-drafts').setAttribute('aria-expanded', String(!$('draft-box').hidden));
-  if ($('draft-box').hidden) return;
-  renderDraftGroup('incoming','incoming-drafts','incoming-count');
-  renderDraftGroup('mine','own-drafts','own-count');
-}
-
-function renderHandoff() {
-  const recipients = draftBox?.recipients || [];
-  const showForm = access?.canHandoff && files.size > 0 && recipients.length > 0;
-  const canUndo = Boolean(!published && access?.canReturn);
-  const canDiscard = Boolean(!published && access?.canDelete);
-  let status = '';
-  if (!published && access?.role === 'recipient') status = '收到 ' + ownerId + ' 的入库草稿';
-  else if (!published && recipientId) status = '已交给 ' + recipientId + ' · 等待发布';
-  else if (access?.canHandoff && files.size && !recipients.length && !access.canPublish) {
-    status = '当前目录没有可接收草稿的发布者';
-  }
-  $('handoff-bar').hidden = !showForm && !canUndo && !canDiscard && !status;
-  $('handoff-status').textContent = status;
-  $('handoff-status').hidden = !status;
-  $('handoff-form').hidden = !showForm || published;
-  const picker = $('handoff-recipient');
-  const chosen = picker.value;
-  const placeholder = element('option','选择发布者');
-  placeholder.value = '';
-  picker.replaceChildren(placeholder, ...recipients.map(({id}) => {
-    const option = element('option',id);
-    option.value = id;
-    return option;
-  }));
-  picker.value = recipients.some(({id}) => id === chosen) ? chosen : '';
-  picker.disabled = busy || stale;
-  $('handoff-form').querySelector('button').disabled = busy || stale;
-  $('undo-handoff').textContent = access?.role === 'recipient' ? '退回草稿' : '撤回交接';
-  $('undo-handoff').hidden = !canUndo;
-  $('undo-handoff').disabled = busy || stale;
-  $('discard-draft').hidden = !canDiscard;
-  $('discard-draft').disabled = busy || stale;
+  $('drafts').replaceChildren(...(rows.length ? rows : [element('li','没有草稿','empty')]));
 }
 
 function render() {
   const editing = document.activeElement?.dataset.edit;
   const connected = Boolean(draftLimits);
-  $('connection').hidden = connected;
-  $('disconnect').hidden = $('work').hidden = !connected;
-  $('disconnect').disabled = $('new-batch').disabled = $('show-drafts').disabled = busy;
-  $('new-batch').hidden = !draftBox?.permissions.create;
+  $('agent-guide').hidden = $('work').hidden = !connected;
+  $('new-batch').disabled = $('show-drafts').disabled = busy;
   $('new-batch').textContent = target ? '新建版本批次' : '新建批次';
   $('work-title').textContent = target ? '追加版本' : '批量入库';
   const targetLink = $('target-model');
@@ -857,14 +769,10 @@ function render() {
     targetLink.textContent = target.name;
     targetLink.href = targetCatalogueUrl();
   }
-  $('draft-editor').hidden = !batchId && !draftBox?.permissions.create;
-  $('browse-files').hidden = !canUpload();
-  $('browse-folder').hidden = !canUpload() || !('webkitdirectory' in $('folder-input'));
+  $('browse-folder').hidden = !('webkitdirectory' in $('folder-input'));
   $('browse-files').disabled = $('browse-folder').disabled = busy || stale;
-  $('drop-help').hidden = !canUpload();
   $('stale-plan').hidden = !connected || !stale;
   $('reload-plan').disabled = busy;
-  $('connect').disabled = busy || !projectId || !datasetId;
   $('file-count').textContent = files.size;
   $('toggle-issues').setAttribute('aria-pressed', String(onlyIssues));
   $('toggle-issues').disabled = !validation;
@@ -875,7 +783,6 @@ function render() {
   $('toggle-review').textContent = pending ? '待确认 ' + pending : '待确认';
   $('toggle-review').setAttribute('aria-pressed', String(onlyReview));
   renderDraftBox();
-  renderHandoff();
   renderFiles();
   renderVersions();
   renderBindings();
@@ -1043,7 +950,7 @@ function droppedFiles(transfer) {
 }
 
 function chooseFiles(event) {
-  if (!canUpload()) return;
+  if (!draftLimits) return;
   const selection = selectedFiles(event.target.files);
   const picked = event.target.files.length > 0;
   event.target.value = '';
@@ -1090,24 +997,7 @@ $('show-drafts').onclick = () => withBusy(async () => {
   if (!draftBoxOpen) await refreshDraftBox();
   draftBoxOpen = !draftBoxOpen;
 });
-$('handoff-form').onsubmit = event => {
-  event.preventDefault();
-  const to = $('handoff-recipient').value;
-  if (to) withBusy(() => changeHandoff(to));
-};
-$('undo-handoff').onclick = () => withBusy(() => changeHandoff(null));
 $('discard-draft').onclick = () => withBusy(deleteDraft);
-$('disconnect').onclick = async () => {
-  await withBusy(async () => {
-    if (!await leaveDraft()) return;
-    token = '';
-    draftBox = undefined;
-    draftBoxOpen = false;
-    applyBatch({}, {preserveUrl:true});
-    refreshPreview();
-  });
-  if (!draftLimits) $('token').focus();
-};
 $('reload-plan').onclick = () => withBusy(async () => {
   if (!confirmDiscard()) return;
   try {
@@ -1141,17 +1031,17 @@ $('play').onclick = () => {
 const drop = $('dropzone');
 drop.ondragover = event => {
   event.preventDefault();
-  if (canUpload() && !stale && !busy && event.dataTransfer.types.includes('Files')) drop.classList.add('is-dragged');
+  if (draftLimits && !stale && !busy && event.dataTransfer.types.includes('Files')) drop.classList.add('is-dragged');
 };
 drop.ondragleave = () => drop.classList.remove('is-dragged');
 drop.ondrop = event => {
   event.preventDefault();
   drop.classList.remove('is-dragged');
-  if (canUpload() && !stale && !busy) takeFiles(droppedFiles(event.dataTransfer));
+  if (draftLimits && !stale && !busy) takeFiles(droppedFiles(event.dataTransfer));
 };
 window.addEventListener('beforeunload', event => {
   if (dirty) event.preventDefault();
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) stopPlayback(); });
-if (!projectId || !datasetId) notice('请从资产目录打开批量入库。', true);
-render();
+if (projectId && datasetId) withBusy(openWorkspace);
+else notice('请从资产目录打开批量入库。', true);

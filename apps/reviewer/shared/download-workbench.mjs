@@ -173,16 +173,11 @@ function createDialogs() {
           <section class="workbench-team" aria-label="投票、标签与评论">
             <div class="workbench-team-heading"><h3>版本评阅</h3>
               <span class="workbench-note" data-wb="team-mode"></span>
-              <button type="button" class="text-btn" data-wb="team-refresh" hidden>刷新</button>
-              <button type="button" class="text-btn" data-wb="sign-out" hidden>退出团队</button></div>
+              <button type="button" class="text-btn" data-wb="team-refresh" hidden>刷新</button></div>
             <div class="workbench-votes">
               <button type="button" class="light-btn" data-wb="vote-up"></button>
               <button type="button" class="light-btn" data-wb="vote-down"></button>
             </div>
-            <form class="workbench-inline" data-wb="team-login" hidden>
-              <input type="password" data-wb="team-token" aria-label="团队访问令牌" placeholder="团队访问令牌" autocomplete="current-password" required>
-              <button class="light-btn">加入团队</button>
-            </form>
             <div class="workbench-tags" data-wb="tags"></div>
             <form class="workbench-inline" data-wb="tag-form">
               <input type="text" data-wb="tag" aria-label="新标签" placeholder="新标签" maxlength="32" required>
@@ -281,11 +276,8 @@ export function mountDownloadWorkbench({
     const asset = own(snapshot?.assets, selected.asset.id);
     const record = own(asset?.versions, selected.version.id);
     const mode = snapshot?.mode;
-    get('team-mode').textContent = mode === 'shared' ? snapshot.actor?.name || '团队' :
-      mode === 'local' ? '本地记录' : mode === 'locked' ? '团队登录' :
-      team && !teamError ? '正在连接团队' : '团队服务不可用';
-    get('team-login').hidden = mode !== 'locked';
-    get('sign-out').hidden = mode !== 'shared';
+    get('team-mode').textContent = mode === 'shared' ? '本机共用记录' :
+      mode === 'local' ? '浏览器记录' : team && !teamError ? '正在读取评阅记录' : '评阅记录不可用';
     get('team-refresh').hidden = !team || mode === 'local';
     get('team-refresh').disabled = teamBusy;
     get('tag-form').hidden = !canWrite();
@@ -296,10 +288,9 @@ export function mountDownloadWorkbench({
       vote.setAttribute('aria-pressed', String(record?.myVote === side));
       vote.disabled = teamBusy || !canWrite();
     }
-    for (const key of ['team-login', 'tag-form', 'comment-form']) {
+    for (const key of ['tag-form', 'comment-form']) {
       get(key).querySelector('button').disabled = teamBusy;
     }
-    get('sign-out').disabled = teamBusy;
     get('tags').replaceChildren(...tagsFor(selected.asset).map(tag => el('span', tag)));
     const comments = record?.comments || [];
     get('comments-title').textContent = `评论 ${comments.length}`;
@@ -341,26 +332,6 @@ export function mountDownloadWorkbench({
       const draft = input.value;
       return runVersionAction('comment', {text:draft.trim()})?.then(saved => {
         if (saved && version && !version.signal.aborted && input.value === draft) input.value = '';
-      });
-    };
-    get('team-login').onsubmit = event => {
-      event.preventDefault();
-      const input = get('team-token');
-      const token = input.value.trim();
-      input.value = '';
-      return updateTeam(async () => {
-        team.setToken(token);
-        const next = await team.load();
-        if (next.mode === 'locked') throw Error('团队登录失败，请检查访问令牌');
-        return next;
-      });
-    };
-    get('sign-out').onclick = () => {
-      snapshot = {mode:'locked', actor:null, assets:{}};
-      onTagsChanged?.();
-      return updateTeam(() => {
-        team.setToken('');
-        return team.load();
       });
     };
     get('team-refresh').onclick = () => updateTeam(() => team.load());
